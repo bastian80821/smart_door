@@ -1,0 +1,57 @@
+# ---- STM32CubeIDE / DESN2000 project .gitignore ----
+# Keeps build artefacts and IDE metadata out of the repo,
+# while keeping all source (.c/.h), the .ioc, and project files tracked.
+
+# CubeIDE workspace / settings metadata
+.settings/
+.metadata/
+
+# Build output folders
+Debug/
+debug/
+Release/
+release/
+
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables / binaries
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.bin
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# macOS clutter
+.DS_Store
