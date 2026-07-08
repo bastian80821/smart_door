@@ -98,8 +98,7 @@ int main(void)
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
-  hal_reader_init();
-  sys_set_state(SYS_IDLE);
+  hal_lcd_write(0, "Press a key:");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -109,12 +108,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	(void)hal_millis();
-	(void)hal_keypad_scan();
-	(void)hal_ldr_read(LDR_INNER);
-	(void)hal_motor_done();
-	(void)config_event_active_at(0);
-	sys_set_state(sys_get_state());
+	  char k = hal_keypad_scan();
+	      if (k != '\0') {
+	          char msg[2] = { k, '\0' };
+	          hal_lcd_write(1, msg);
+	      }
   }
   /* USER CODE END 3 */
 }

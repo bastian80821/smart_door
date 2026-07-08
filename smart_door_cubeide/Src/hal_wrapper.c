@@ -26,6 +26,7 @@
 #define LCD_D6_PIN    GPIO_PIN_10
 #define LCD_D7_PIN    GPIO_PIN_11
 
+
 /* ---- Microsecond delay via the DWT cycle counter --------------------------
  * HAL_Delay is millisecond-only; the HD44780 enable strobe needs sub-ms timing.
  * DWT->CYCCNT counts core clocks and scales off SystemCoreClock, so the timing
@@ -132,7 +133,43 @@ void hal_direct_led(uint8_t id, bool on) { (void)id; (void)on; }
 void hal_buzzer_tone(uint16_t freq_hz) { (void)freq_hz; }
 
 /* ---- Keypad ---- */
-char hal_keypad_scan(void) { return '\0'; }
+/* Non-blocking single-key scan with debounce. Returns a key exactly once per
+ * physical press (on release), or '\0' if nothing new. Rows idle HIGH; we drive
+ * one LOW at a time and look for a column pulled LOW through the pressed key. */
+char hal_keypad_scan(void) {
+    GPIO_TypeDef *row_port[4] = { GPIOB, GPIOB, GPIOB, GPIOB };
+    uint16_t      row_pin[4]  = { GPIO_PIN_11, GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14 };
+    GPIO_TypeDef *col_port[4] = { GPIOA, GPIOA, GPIOA, GPIOA };
+    uint16_t      col_pin[4]  = { GPIO_PIN_8, GPIO_PIN_9, GPIO_PIN_10, GPIO_PIN_11 };
+    static const char keymap[4][4] = {
+        { '1', '2', '3', 'A' },
+        { '4', '5', '6', 'B' },
+        { '7', '8', '9', 'C' },
+        { '*', '0', '#', 'D' },
+    };
+
+    static char held = '\0';
+    char found = '\0';
+
+    for (uint8_t r = 0; r < 4 && found == '\0'; r++) {
+        for (uint8_t i = 0; i < 4; i++) {
+            HAL_GPIO_WritePin(row_port[i], row_pin[i],
+                              i == r ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        }
+        delay_us(5);
+        for (uint8_t c = 0; c < 4; c++) {
+            if (HAL_GPIO_ReadPin(col_port[c], col_pin[c]) == GPIO_PIN_RESET) {
+                found = keymap[r][c];
+            }
+        }
+    }
+
+    if (found != '\0') { held = found; return '\0'; }
+
+    char released = held;
+    held = '\0';
+    return released;
+}
 
 /* ---- Timebase ---- */
 uint32_t hal_millis(void) { return HAL_GetTick(); }
