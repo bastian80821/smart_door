@@ -25,6 +25,7 @@
 #include "system_state.h"
 #include "config.h"
 #include "hal_wrapper.h"
+#include "mgmt.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -98,7 +99,7 @@ int main(void)
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
-  hal_lcd_write(0, "Press a key:");
+  mgmt_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -108,11 +109,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  char k = hal_keypad_scan();
-	      if (k != '\0') {
-	          char msg[2] = { k, '\0' };
-	          hal_lcd_write(1, msg);
-	      }
+	  mgmt_task();
   }
   /* USER CODE END 3 */
 }
