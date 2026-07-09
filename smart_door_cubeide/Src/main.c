@@ -99,6 +99,16 @@ int main(void)
   MX_TIM6_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+
+  /* Force internal pull-ups on PB8/PB9 in case the reader board lacks them */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitTypeDef pu = {0};
+  pu.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+  pu.Mode = GPIO_MODE_AF_OD;      /* I2C alternate-function, open-drain */
+  pu.Pull = GPIO_PULLUP;
+  pu.Speed = GPIO_SPEED_FREQ_HIGH;
+  pu.Alternate = GPIO_AF4_I2C1;   /* AF4 = I2C1 on F303 */
+  HAL_GPIO_Init(GPIOB, &pu);
   hal_lcd_init();
   hal_lcd_clear();
   hal_lcd_write(0, "SCANNER START");
