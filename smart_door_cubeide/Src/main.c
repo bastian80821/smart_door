@@ -19,12 +19,13 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "i2c.h"
 #include "tim.h"
 #include "gpio.h"
-
-#include "system_state.h"
-#include "config.h"
 #include "hal_wrapper.h"
+#include <stdio.h>
+
+
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -96,10 +97,25 @@ int main(void)
   MX_ADC3_Init();
   MX_TIM1_Init();
   MX_TIM6_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
-  hal_reader_init();
-  sys_set_state(SYS_IDLE);
+  hal_lcd_clear();
+  hal_lcd_write(0, "SCANNER START");
+  HAL_Delay(1000);
+  hal_lcd_write(0, "I2C scan...");
+
+  char line[17];
+  uint8_t found = 0;
+  for (uint8_t addr = 1; addr < 128; addr++) {
+      if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1), 2, 10) == HAL_OK) {
+          snprintf(line, sizeof line, "Found: 0x%02X", addr);
+          hal_lcd_write(1, line);
+          found = 1;
+          break;
+      }
+  }
+  if (!found) hal_lcd_write(1, "No device");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -109,12 +125,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	(void)hal_millis();
-	(void)hal_keypad_scan();
-	(void)hal_ldr_read(LDR_INNER);
-	(void)hal_motor_done();
-	(void)config_event_active_at(0);
-	sys_set_state(sys_get_state());
   }
   /* USER CODE END 3 */
 }
@@ -157,10 +167,11 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_TIM1|RCC_PERIPHCLK_ADC12
-                              |RCC_PERIPHCLK_ADC34;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_TIM1
+                              |RCC_PERIPHCLK_ADC12|RCC_PERIPHCLK_ADC34;
   PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
   PeriphClkInit.Adc34ClockSelection = RCC_ADC34PLLCLK_DIV1;
+  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   PeriphClkInit.Tim1ClockSelection = RCC_TIM1CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
