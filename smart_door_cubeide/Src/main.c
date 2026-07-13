@@ -25,6 +25,7 @@
 #include "system_state.h"
 #include "config.h"
 #include "hal_wrapper.h"
+#include "mgmt.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -98,8 +99,7 @@ int main(void)
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
-  hal_reader_init();
-  sys_set_state(SYS_IDLE);
+  mgmt_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -107,14 +107,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
+	  mgmt_task();
     /* USER CODE BEGIN 3 */
-	(void)hal_millis();
-	(void)hal_keypad_scan();
-	(void)hal_ldr_read(LDR_INNER);
-	(void)hal_motor_done();
-	(void)config_event_active_at(0);
-	sys_set_state(sys_get_state());
   }
   /* USER CODE END 3 */
 }
