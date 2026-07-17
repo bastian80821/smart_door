@@ -100,32 +100,10 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  /* Force internal pull-ups on PB8/PB9 in case the reader board lacks them */
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  GPIO_InitTypeDef pu = {0};
-  pu.Pin = GPIO_PIN_8 | GPIO_PIN_9;
-  pu.Mode = GPIO_MODE_AF_OD;      /* I2C alternate-function, open-drain */
-  pu.Pull = GPIO_PULLUP;
-  pu.Speed = GPIO_SPEED_FREQ_HIGH;
-  pu.Alternate = GPIO_AF4_I2C1;   /* AF4 = I2C1 on F303 */
-  HAL_GPIO_Init(GPIOB, &pu);
   hal_lcd_init();
-  hal_lcd_clear();
-  hal_lcd_write(0, "SCANNER START");
-  HAL_Delay(1000);
-  hal_lcd_write(0, "I2C scan...");
-
-  char line[17];
-  uint8_t found = 0;
-  for (uint8_t addr = 1; addr < 128; addr++) {
-      if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1), 2, 10) == HAL_OK) {
-          snprintf(line, sizeof line, "Found: 0x%02X", addr);
-          hal_lcd_write(1, line);
-          found = 1;
-          break;
-      }
-  }
-  if (!found) hal_lcd_write(1, "No device");
+  hal_lcd_write(0, "Reader init...");
+  if (hal_reader_init()) hal_lcd_write(0, "Reader ready");
+  else                   hal_lcd_write(0, "Reader FAIL");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -135,6 +113,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	  card_uid_t uid;
+	      if (hal_reader_poll(&uid)) {
+	          char line[17];
+	          int n = 0;
+	          for (uint8_t i = 0; i < uid.length && n < 15; i++)
+	              n += snprintf(line + n, sizeof line - n, "%02X", uid.bytes[i]);
+	          hal_lcd_write(1, line);
+	          HAL_Delay(500);
+	      }
+
   }
   /* USER CODE END 3 */
 }
