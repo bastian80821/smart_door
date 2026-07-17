@@ -26,6 +26,7 @@
 #include "mgmt.h"
 #include "auth.h"
 #include <stdio.h>
+#include "idstore.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -100,6 +101,8 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
+  //CLEARS ALL IDS TEMPORARILY FOR DEMONSTRATION PURPOSES
+  idstore_clear_all();
   auth_init();
   mgmt_init();
   /* USER CODE END 2 */
@@ -110,9 +113,11 @@ int main(void)
   {
     /* USER CODE END WHILE */
 
+
     /* USER CODE BEGIN 3 */
-    auth_task();
-    mgmt_task();
+	auth_task();
+	mgmt_task();
+
   }
   /* USER CODE END 3 */
 }

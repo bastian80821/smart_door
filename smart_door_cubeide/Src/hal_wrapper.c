@@ -207,11 +207,101 @@ bool hal_reader_poll(card_uid_t *uid) {
     return false;
 }
 
-/* Sector-key MIFARE read: next step. */
-bool hal_reader_read_sector(uint8_t sector, const uint8_t key[6], uint8_t block_out[16]) {
-    (void)sector; (void)key; (void)block_out; return false;
+/* ==== MIFARE sector authenticate + read =====================================
+ * InDataExchange(0x40): first a MIFARE Authenticate (0x60 = key A) for the
+ * target block with the 6-byte key + card UID, then a MIFARE Read (0x30) of
+ * that block. The card must already be selected (poll runs InListPassiveTarget).
+ * ========================================================================== */
+static bool pn532_mifare_read(uint8_t block, const uint8_t key[6],
+                              const uint8_t *uid, uint8_t uid_len,
+                              uint8_t block_out[16]) {
+    uint8_t a[18];
+    uint8_t n = 0;
+    a[n++] = 0x40;              /* InDataExchange */
+    a[n++] = 0x01;              /* target #1 */
+    a[n++] = 0x60;              /* MIFARE Authenticate, key A */
+    a[n++] = block;
+    for (uint8_t i = 0; i < 6; i++) a[n++] = key[i];
+    for (uint8_t i = 0; i < uid_len && i < 7; i++) a[n++] = uid[i];
+    if (!pn532_write_cmd(a, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t ar[16];
+    if (!pn532_read_frame(ar, 12)) return false;
+    bool auth_ok = false;
+    for (uint8_t i = 0; i + 2 < 12; i++) {
+        if (ar[i] == PN532_PNTOHOST && ar[i + 1] == 0x41) { auth_ok = (ar[i + 2] == 0x00); break; }
+    }
+    if (!auth_ok) return false;
+
+    uint8_t rc[4];
+    n = 0;
+    rc[n++] = 0x40; rc[n++] = 0x01; rc[n++] = 0x30; rc[n++] = block;   /* MIFARE Read */
+    if (!pn532_write_cmd(rc, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t rr[32];
+    if (!pn532_read_frame(rr, 28)) return false;
+    for (uint8_t i = 0; i + 2 < 28; i++) {
+        if (rr[i] == PN532_PNTOHOST && rr[i + 1] == 0x41) {
+            if (rr[i + 2] != 0x00) return false;
+            for (uint8_t k = 0; k < 16; k++) block_out[k] = rr[i + 3 + k];
+            return true;
+        }
+    }
+    return false;
 }
 
+bool hal_reader_read_sector(const card_uid_t *uid, uint8_t block,
+                            const uint8_t key[6], uint8_t block_out[16]) {
+    return pn532_mifare_read(block, key, uid->bytes, uid->length, block_out);
+}
+
+
+/* ==== MIFARE authenticate + write (enrolment) ===============================
+ * Same auth as the read path, then MIFARE Write (0xA0) of 16 bytes. Refuses
+ * sector-trailer blocks (3,7,11,...) and sector 0 so we can never overwrite the
+ * keys and brick a card.
+ * ========================================================================== */
+static bool pn532_mifare_write(uint8_t block, const uint8_t key[6],
+                               const uint8_t *uid, uint8_t uid_len,
+                               const uint8_t data[16]) {
+    if ((block & 0x03) == 0x03) return false;   /* trailer block -> refuse */
+    if (block < 4)             return false;    /* keep out of sector 0 */
+
+    uint8_t a[18];
+    uint8_t n = 0;
+    a[n++] = 0x40; a[n++] = 0x01; a[n++] = 0x60; a[n++] = block;   /* Authenticate key A */
+    for (uint8_t i = 0; i < 6; i++) a[n++] = key[i];
+    for (uint8_t i = 0; i < uid_len && i < 7; i++) a[n++] = uid[i];
+    if (!pn532_write_cmd(a, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t ar[16];
+    if (!pn532_read_frame(ar, 12)) return false;
+    bool auth_ok = false;
+    for (uint8_t i = 0; i + 2 < 12; i++)
+        if (ar[i] == PN532_PNTOHOST && ar[i + 1] == 0x41) { auth_ok = (ar[i + 2] == 0x00); break; }
+    if (!auth_ok) return false;
+
+    uint8_t wc[20];
+    n = 0;
+    wc[n++] = 0x40; wc[n++] = 0x01; wc[n++] = 0xA0; wc[n++] = block;   /* MIFARE Write */
+    for (uint8_t i = 0; i < 16; i++) wc[n++] = data[i];
+    if (!pn532_write_cmd(wc, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t wr[16];
+    if (!pn532_read_frame(wr, 12)) return false;
+    for (uint8_t i = 0; i + 2 < 12; i++)
+        if (wr[i] == PN532_PNTOHOST && wr[i + 1] == 0x41) return (wr[i + 2] == 0x00);
+    return false;
+}
+
+bool hal_reader_write_sector(const card_uid_t *uid, uint8_t block,
+                             const uint8_t key[6], const uint8_t data[16]) {
+    return pn532_mifare_write(block, key, uid->bytes, uid->length, data);
+}
 
 
 /* ---- Light sensors (high reading = clear) ---- */
