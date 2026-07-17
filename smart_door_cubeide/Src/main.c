@@ -23,9 +23,9 @@
 #include "tim.h"
 #include "gpio.h"
 #include "hal_wrapper.h"
+#include "mgmt.h"
+#include "auth.h"
 #include <stdio.h>
-
-
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -99,11 +99,9 @@ int main(void)
   MX_TIM6_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
   hal_lcd_init();
-  hal_lcd_write(0, "Reader init...");
-  if (hal_reader_init()) hal_lcd_write(0, "Reader ready");
-  else                   hal_lcd_write(0, "Reader FAIL");
+  auth_init();
+  mgmt_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -113,17 +111,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-
-	  card_uid_t uid;
-	      if (hal_reader_poll(&uid)) {
-	          char line[17];
-	          int n = 0;
-	          for (uint8_t i = 0; i < uid.length && n < 15; i++)
-	              n += snprintf(line + n, sizeof line - n, "%02X", uid.bytes[i]);
-	          hal_lcd_write(1, line);
-	          HAL_Delay(500);
-	      }
-
+    auth_task();
+    mgmt_task();
   }
   /* USER CODE END 3 */
 }
