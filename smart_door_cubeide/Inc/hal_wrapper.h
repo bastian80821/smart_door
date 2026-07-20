@@ -39,7 +39,13 @@ typedef struct {
 
 bool hal_reader_init(void);
 bool hal_reader_poll(card_uid_t *uid);   /* non-blocking; call each loop */
-bool hal_reader_read_sector(uint8_t sector, const uint8_t key[6], uint8_t block_out[16]);
+bool hal_reader_read_sector(const card_uid_t *uid, uint8_t block,
+                            const uint8_t key[6], uint8_t block_out[16]);
+/** Authenticate to `block` with key A and write 16 bytes (enrolment). Refuses
+ *  sector-trailer blocks and sector 0. Card must be selected (polled) first. */
+bool hal_reader_write_sector(const card_uid_t *uid, uint8_t block,
+                             const uint8_t key[6], const uint8_t data[16]);
+
 
 /* ==== Light sensors (LDRs, door module) ==================================== */
 /* Two analog LDRs on ADC pins: PC4 (R24) and PB1 (R32).

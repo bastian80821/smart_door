@@ -19,13 +19,14 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "i2c.h"
 #include "tim.h"
 #include "gpio.h"
-
-#include "system_state.h"
-#include "config.h"
 #include "hal_wrapper.h"
 #include "mgmt.h"
+#include "auth.h"
+#include <stdio.h>
+#include "idstore.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -97,8 +98,12 @@ int main(void)
   MX_ADC3_Init();
   MX_TIM1_Init();
   MX_TIM6_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
+  //CLEARS ALL IDS TEMPORARILY FOR DEMONSTRATION PURPOSES
+  idstore_clear_all();
+  auth_init();
   mgmt_init();
   /* USER CODE END 2 */
 
@@ -107,8 +112,12 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  mgmt_task();
+
+
     /* USER CODE BEGIN 3 */
+	auth_task();
+	mgmt_task();
+
   }
   /* USER CODE END 3 */
 }
@@ -151,10 +160,11 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_TIM1|RCC_PERIPHCLK_ADC12
-                              |RCC_PERIPHCLK_ADC34;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_TIM1
+                              |RCC_PERIPHCLK_ADC12|RCC_PERIPHCLK_ADC34;
   PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
   PeriphClkInit.Adc34ClockSelection = RCC_ADC34PLLCLK_DIV1;
+  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   PeriphClkInit.Tim1ClockSelection = RCC_TIM1CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {

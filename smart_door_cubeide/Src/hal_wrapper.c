@@ -10,6 +10,7 @@
  */
 #include "hal_wrapper.h"
 #include "main.h"   /* STM32 HAL + CubeMX-generated handles */
+#include "i2c.h"
 
 /* ---- Pin map (coaST board) -----------------------------------------------
  * Kept local so feature code never sees a pin number. Mirrors the README table.
@@ -109,14 +110,199 @@ void hal_lcd_define_char(uint8_t slot, const uint8_t rows[8]) {
     lcd_command(0x80);           /* leave the address counter back in DDRAM */
 }
 
-/* ==== Everything below is still a stub -- filled in as hardware comes up ==== */
 
-/* ---- Card reader (PN532) ---- */
-bool hal_reader_init(void) { return true; }
-bool hal_reader_poll(card_uid_t *uid) { (void)uid; return false; }
-bool hal_reader_read_sector(uint8_t sector, const uint8_t key[6], uint8_t block_out[16]) {
-    (void)sector; (void)key; (void)block_out; return false;
+/* ==== Card reader (PN532 over I2C) ========================================
+ * Protocol: command frame -> ACK frame -> response frame. Each I2C read is
+ * prefixed by a status byte (bit0 = 1 means "ready"). Addr 0x24 on hi2c1.   */
+
+#define PN532_ADDR      (0x24 << 1)   /* HAL uses 8-bit addresses */
+#define PN532_PREAMBLE  0x00
+#define PN532_STARTCODE 0xFF
+#define PN532_HOSTTOPN  0xD4          /* TFI: host -> PN532 */
+#define PN532_PNTOHOST  0xD5          /* TFI: PN532 -> host */
+
+/* Send a command frame: [00 00 FF LEN LCS D4 cmd... DCS 00] */
+static bool pn532_write_cmd(const uint8_t *cmd, uint8_t clen) {
+    uint8_t buf[32];
+    uint8_t i = 0;
+    buf[i++] = PN532_PREAMBLE;
+    buf[i++] = PN532_PREAMBLE;
+    buf[i++] = PN532_STARTCODE;
+    uint8_t len = clen + 1;                 /* +1 for the TFI byte */
+    buf[i++] = len;
+    buf[i++] = (uint8_t)(~len + 1);         /* length checksum */
+    buf[i++] = PN532_HOSTTOPN;
+    uint8_t sum = PN532_HOSTTOPN;
+    for (uint8_t j = 0; j < clen; j++) { buf[i++] = cmd[j]; sum += cmd[j]; }
+    buf[i++] = (uint8_t)(~sum + 1);         /* data checksum */
+    buf[i++] = PN532_PREAMBLE;
+    return HAL_I2C_Master_Transmit(&hi2c1, PN532_ADDR, buf, i, 100) == HAL_OK;
 }
+
+/* Poll the status byte until the PN532 signals ready, or time out. */
+static bool pn532_wait_ready(uint32_t timeout_ms) {
+    uint8_t status = 0;
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        if (HAL_I2C_Master_Receive(&hi2c1, PN532_ADDR, &status, 1, 10) == HAL_OK
+            && (status & 1)) {
+            return true;
+        }
+        HAL_Delay(1);
+    }
+    return false;
+}
+
+/* Read status byte + n frame bytes. Caller sizes buf to n+1. */
+static bool pn532_read_frame(uint8_t *buf, uint8_t n) {
+    return HAL_I2C_Master_Receive(&hi2c1, PN532_ADDR, buf, (uint16_t)(n + 1), 100) == HAL_OK;
+}
+
+/* The 6-byte ACK the PN532 sends after accepting a command. */
+static bool pn532_read_ack(void) {
+    static const uint8_t ack[] = {0x00,0x00,0xFF,0x00,0xFF,0x00};
+    uint8_t buf[7];
+    if (!pn532_read_frame(buf, 6)) return false;
+    for (uint8_t i = 0; i < 6; i++) if (buf[i + 1] != ack[i]) return false;
+    return true;
+}
+
+bool hal_reader_init(void) {
+    uint8_t cmd = 0x02;                      /* GetFirmwareVersion: liveness + wake */
+    if (!pn532_write_cmd(&cmd, 1)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(50)) return false;
+    uint8_t resp[16];
+    if (!pn532_read_frame(resp, 13)) return false;
+
+    uint8_t sam[] = {0x14, 0x01, 0x00, 0x00}; /* SAMConfiguration: normal mode */
+    if (!pn532_write_cmd(sam, sizeof sam)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(50)) return false;
+    uint8_t sresp[10];
+    return pn532_read_frame(sresp, 8);
+}
+
+bool hal_reader_poll(card_uid_t *uid) {
+    uint8_t cmd[] = {0x4A, 0x01, 0x00};       /* InListPassiveTarget: 1 target, type A */
+    if (!pn532_write_cmd(cmd, sizeof cmd)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(60)) return false;  /* no card -> no reply soon */
+
+    uint8_t r[30];
+    if (!pn532_read_frame(r, 25)) return false;
+
+    /* Locate D5 4B in the response, then read NFCID length + bytes. */
+    for (uint8_t i = 0; i < 20; i++) {
+        if (r[i] == PN532_PNTOHOST && r[i + 1] == 0x4B) {
+            uint8_t nbtg = r[i + 2];
+            if (nbtg < 1) return false;
+            uint8_t id_len = r[i + 7];
+            if (id_len == 0 || id_len > 7) return false;
+            uid->length = id_len;
+            for (uint8_t k = 0; k < id_len; k++) uid->bytes[k] = r[i + 8 + k];
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ==== MIFARE sector authenticate + read =====================================
+ * InDataExchange(0x40): first a MIFARE Authenticate (0x60 = key A) for the
+ * target block with the 6-byte key + card UID, then a MIFARE Read (0x30) of
+ * that block. The card must already be selected (poll runs InListPassiveTarget).
+ * ========================================================================== */
+static bool pn532_mifare_read(uint8_t block, const uint8_t key[6],
+                              const uint8_t *uid, uint8_t uid_len,
+                              uint8_t block_out[16]) {
+    uint8_t a[18];
+    uint8_t n = 0;
+    a[n++] = 0x40;              /* InDataExchange */
+    a[n++] = 0x01;              /* target #1 */
+    a[n++] = 0x60;              /* MIFARE Authenticate, key A */
+    a[n++] = block;
+    for (uint8_t i = 0; i < 6; i++) a[n++] = key[i];
+    for (uint8_t i = 0; i < uid_len && i < 7; i++) a[n++] = uid[i];
+    if (!pn532_write_cmd(a, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t ar[16];
+    if (!pn532_read_frame(ar, 12)) return false;
+    bool auth_ok = false;
+    for (uint8_t i = 0; i + 2 < 12; i++) {
+        if (ar[i] == PN532_PNTOHOST && ar[i + 1] == 0x41) { auth_ok = (ar[i + 2] == 0x00); break; }
+    }
+    if (!auth_ok) return false;
+
+    uint8_t rc[4];
+    n = 0;
+    rc[n++] = 0x40; rc[n++] = 0x01; rc[n++] = 0x30; rc[n++] = block;   /* MIFARE Read */
+    if (!pn532_write_cmd(rc, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t rr[32];
+    if (!pn532_read_frame(rr, 28)) return false;
+    for (uint8_t i = 0; i + 2 < 28; i++) {
+        if (rr[i] == PN532_PNTOHOST && rr[i + 1] == 0x41) {
+            if (rr[i + 2] != 0x00) return false;
+            for (uint8_t k = 0; k < 16; k++) block_out[k] = rr[i + 3 + k];
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hal_reader_read_sector(const card_uid_t *uid, uint8_t block,
+                            const uint8_t key[6], uint8_t block_out[16]) {
+    return pn532_mifare_read(block, key, uid->bytes, uid->length, block_out);
+}
+
+
+/* ==== MIFARE authenticate + write (enrolment) ===============================
+ * Same auth as the read path, then MIFARE Write (0xA0) of 16 bytes. Refuses
+ * sector-trailer blocks (3,7,11,...) and sector 0 so we can never overwrite the
+ * keys and brick a card.
+ * ========================================================================== */
+static bool pn532_mifare_write(uint8_t block, const uint8_t key[6],
+                               const uint8_t *uid, uint8_t uid_len,
+                               const uint8_t data[16]) {
+    if ((block & 0x03) == 0x03) return false;   /* trailer block -> refuse */
+    if (block < 4)             return false;    /* keep out of sector 0 */
+
+    uint8_t a[18];
+    uint8_t n = 0;
+    a[n++] = 0x40; a[n++] = 0x01; a[n++] = 0x60; a[n++] = block;   /* Authenticate key A */
+    for (uint8_t i = 0; i < 6; i++) a[n++] = key[i];
+    for (uint8_t i = 0; i < uid_len && i < 7; i++) a[n++] = uid[i];
+    if (!pn532_write_cmd(a, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t ar[16];
+    if (!pn532_read_frame(ar, 12)) return false;
+    bool auth_ok = false;
+    for (uint8_t i = 0; i + 2 < 12; i++)
+        if (ar[i] == PN532_PNTOHOST && ar[i + 1] == 0x41) { auth_ok = (ar[i + 2] == 0x00); break; }
+    if (!auth_ok) return false;
+
+    uint8_t wc[20];
+    n = 0;
+    wc[n++] = 0x40; wc[n++] = 0x01; wc[n++] = 0xA0; wc[n++] = block;   /* MIFARE Write */
+    for (uint8_t i = 0; i < 16; i++) wc[n++] = data[i];
+    if (!pn532_write_cmd(wc, n)) return false;
+    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
+    if (!pn532_wait_ready(80)) return false;
+    uint8_t wr[16];
+    if (!pn532_read_frame(wr, 12)) return false;
+    for (uint8_t i = 0; i + 2 < 12; i++)
+        if (wr[i] == PN532_PNTOHOST && wr[i + 1] == 0x41) return (wr[i + 2] == 0x00);
+    return false;
+}
+
+bool hal_reader_write_sector(const card_uid_t *uid, uint8_t block,
+                             const uint8_t key[6], const uint8_t data[16]) {
+    return pn532_mifare_write(block, key, uid->bytes, uid->length, data);
+}
+
 
 /* ---- Light sensors (high reading = clear) ---- */
 uint16_t hal_ldr_read(ldr_id_t sensor) { (void)sensor; return 4000; }
