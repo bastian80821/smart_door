@@ -22,15 +22,21 @@
 #include "i2c.h"
 #include "tim.h"
 #include "gpio.h"
-#include "hal_wrapper.h"
-#include "mgmt.h"
-#include "auth.h"
-#include <stdio.h>
-#include "idstore.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "hal_wrapper.h"
+#include "idstore.h"
+#include "auth.h"
+#include "mgmt.h"
 
+#include "feedback.h"
+#include "lcd_feedback.h"
+#include "ldr.h"
+#include "motor.h"
+#include "nfc.h"
+#include "passage.h"
+#include "system_state.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -101,21 +107,32 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   hal_lcd_init();
+
+  HAL_Delay(150); // Gives time for the PN532 to finish powering up.
+
   //CLEARS ALL IDS TEMPORARILY FOR DEMONSTRATION PURPOSES
   idstore_clear_all();
   auth_init();
   mgmt_init();
+  
+  passage_init();
   /* USER CODE END 2 */
-
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     /* USER CODE END WHILE */
 
-
     /* USER CODE BEGIN 3 */
 	auth_task();
+
+	nfc_task();
+	ldr_task();
+	motor_task();
+	feedback_task();
+	lcd_feedback_task();
+	passage_task();
+
 	mgmt_task();
 
   }

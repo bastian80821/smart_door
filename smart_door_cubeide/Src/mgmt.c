@@ -21,6 +21,7 @@
 #include "config.h"
 #include "auth.h"
 #include <stdio.h>
+#include <string.h>
 
 /* ---- Admin gate seam ------------------------------------------------------
  * The menu is only reachable while the admin fob window is open. */
@@ -60,18 +61,45 @@ static uint32_t    notice_until = 0;
  * instant the admin window opens or expires -- even with no keypress. */
 static bool        idle_admin_shown = false;
 
+/* ---- External access-system display ------------------------------------- */
+
+static bool system_message_active = false;
+static bool system_message_dirty = false;
+static bool reset_requested = false;
+
+static bool custom_idle_enabled = false;
+
+static char system_top[17] = "";
+static char system_bottom[17] = "";
+
+static char custom_idle_top[17] = "";
+static char custom_idle_bottom[17] = "";
+
 /* ---- Rendering ----------------------------------------------------------- */
 static void show_idle(void) {
     idle_admin_shown = auth_is_admin();
+
     if (auth_is_admin()) {
         hal_lcd_write(0, "Admin mode");
         hal_lcd_write(1, "D=menu Tap=enrol");
+    } else if(custom_idle_enabled) {
+        hal_lcd_write(0, custom_idle_top);
+        hal_lcd_write(1, custom_idle_bottom);
     } else {
         hal_lcd_write(0, "Smart Door");
         hal_lcd_write(1, "Tap admin key");
     }
 }
 
+/* Copy and safely limit one LCD row to 16 characters. */
+static void copy_lcd_row(char destination[17], const char *source)
+{
+    memset(destination, 0, 17);
+
+    if (source != NULL) {
+        strncpy(destination, source, 16);
+    }
+}
 static void show_menu(void) {
     char top[17];
     snprintf(top, sizeof top, ">%s", MENU_LABELS[menu_pos]);
@@ -149,7 +177,76 @@ void mgmt_init(void) {
     render();
 }
 
+void mgmt_set_idle_message(const char *top, const char *bottom)
+{
+    copy_lcd_row(custom_idle_top, top);
+    copy_lcd_row(custom_idle_bottom, bottom);
+
+    custom_idle_enabled = true;
+
+    if (!system_message_active && state == ST_IDLE) {
+        show_idle();
+    }
+}
+
+void mgmt_set_system_message(const char *top, const char *bottom)
+{
+    copy_lcd_row(system_top, top);
+    copy_lcd_row(system_bottom, bottom);
+
+    system_message_active = true;
+    system_message_dirty = true;
+}
+
+void mgmt_clear_system_message(void)
+{
+    system_message_active = false;
+    system_message_dirty = false;
+
+    /*
+     * Return to the existing management idle state.
+     */
+    state = ST_IDLE;
+    show_idle();
+}
+
+bool mgmt_take_reset_request(void)
+{
+    bool result = reset_requested;
+
+    reset_requested = false;
+
+    return result;
+}
+
 void mgmt_task(void) {
+    /* Access-control messages temporarily take priority over the menu.
+     * mgmt still remains the only module that directly writes to the LCD.
+     */
+    if (system_message_active) {
+        /*
+         * Remove auth events that are already being handled by the passage
+         * controller so they do not reappear after the system message ends.
+         */
+        (void)auth_poll_event();
+
+        if (system_message_dirty) {
+            hal_lcd_write(0, system_top);
+            hal_lcd_write(1, system_bottom);
+
+            system_message_dirty = false;
+        }
+
+        /*'#' is the manual reset input while an alarm or error message is active.*/
+        char reset_key = hal_keypad_scan();
+
+        if (reset_key == '#') {
+            reset_requested = true;
+        }
+
+        return;
+    }
+
     if (state == ST_NOTICE) {
         if ((int32_t)(hal_millis() - notice_until) >= 0) go(notice_next);
         return;

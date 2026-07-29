@@ -59,6 +59,12 @@ typedef enum { LDR_OUTER, LDR_INNER } ldr_id_t;
  *  compares against a calibrated threshold to decide covered vs clear. */
 uint16_t hal_ldr_read(ldr_id_t sensor);
 
+/** Calibrate and prepare the two LDR ADC peripherals. */
+bool hal_ldr_init(void);
+
+/** True if the most recent reading from this sensor succeeded. */
+bool hal_ldr_last_read_ok(ldr_id_t sensor);
+
 /* ==== Stepper motor / door (door module) =================================== */
 /* Stepper with 4 coils: PC5/PA12/PC7/PB2 (A/B/C/D). Direction = the order the
  * coil sequence is stepped. The HAL owns the stepping; the door module just
@@ -74,12 +80,15 @@ void hal_motor_set(motor_cmd_t cmd);
  *  The door state machine polls this to know when a transition is complete. */
 bool hal_motor_done(void);
 
+/** Advance the low-level stepper sequence. Call repeatedly from motor_task(). */
+void hal_motor_task(void);
+
 /* ==== LED bar (alarm/feedback module) ====================================== */
 /* IMPORTANT: the bar is driven by a SHIFT REGISTER, not direct GPIO.
  * Three control pins: RCLK/latch PB7, SRCLK/clock PC0, SER/data PB15.
  * hal_led_bar_set() shifts the mask out; feature code just supplies the mask. */
 
-#define LED_BAR_SEGMENTS 8   /* set to the board's actual segment count */
+#define LED_BAR_SEGMENTS 16   /* set to the board's actual segment count */
 
 /** Set the whole bar from a bitmask (bit i -> segment i). Animations are made
  *  by calling this repeatedly over time. */
