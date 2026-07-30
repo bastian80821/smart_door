@@ -15,6 +15,9 @@ static sys_direction_t s_direction = DIR_NONE;
 static bool            s_tailgate  = false;
 static bool            s_sched     = false;
 
+static sys_alarm_reason_t s_alarm_reason = ALARM_REASON_NONE;
+static uint8_t            s_failed_attempts = 0;
+
 sys_state_t sys_get_state(void)          { return s_state; }
 void        sys_set_state(sys_state_t s) { s_state = s; }
 
@@ -26,3 +29,23 @@ void sys_set_tailgate_flag(bool v){ s_tailgate = v; }
 
 bool sys_get_scheduled_unlock(void)  { return s_sched; }
 void sys_set_scheduled_unlock(bool v){ s_sched = v; }
+
+/* --- Alarm reason --------------------------------------------------------- */
+sys_alarm_reason_t sys_get_alarm_reason(void) { return s_alarm_reason; }
+void sys_set_alarm_reason(sys_alarm_reason_t reason) { s_alarm_reason = reason; }
+
+/* --- Consecutive failed attempts ----------------------------------------- */
+uint8_t sys_get_failed_attempts(void) { return s_failed_attempts; }
+
+uint8_t sys_increment_failed_attempts(void) {
+    /*
+     * Saturate at 255 instead of wrapping back to zero.
+     */
+    if (s_failed_attempts < 255u) {
+        s_failed_attempts++;
+    }
+
+    return s_failed_attempts;
+}
+
+void sys_reset_failed_attempts(void) { s_failed_attempts = 0; }

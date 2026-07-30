@@ -11,6 +11,11 @@
 #include "hal_wrapper.h"
 #include "main.h"   /* STM32 HAL + CubeMX-generated handles */
 #include "i2c.h"
+#include "adc.h"
+#include "tim.h"
+#include "stm32f3xx_hal_adc_ex.h"
+#include <stdint.h>
+#include <stdbool.h>
 
 /* ---- Pin map (coaST board) -----------------------------------------------
  * Kept local so feature code never sees a pin number. Mirrors the README table.
@@ -167,19 +172,70 @@ static bool pn532_read_ack(void) {
     return true;
 }
 
-bool hal_reader_init(void) {
-    uint8_t cmd = 0x02;                      /* GetFirmwareVersion: liveness + wake */
-    if (!pn532_write_cmd(&cmd, 1)) return false;
-    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
-    if (!pn532_wait_ready(50)) return false;
-    uint8_t resp[16];
-    if (!pn532_read_frame(resp, 13)) return false;
+bool hal_reader_init(void)
+{
+    /*
+     * Allow the PN532 to complete its power-up.
+     */
+    HAL_Delay(100);
 
-    uint8_t sam[] = {0x14, 0x01, 0x00, 0x00}; /* SAMConfiguration: normal mode */
-    if (!pn532_write_cmd(sam, sizeof sam)) return false;
-    if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
-    if (!pn532_wait_ready(50)) return false;
+    /*
+     * First check whether any device acknowledges address 0x24.
+     */
+    if (HAL_I2C_IsDeviceReady(
+            &hi2c1,
+            PN532_ADDR,
+            3,
+            100) != HAL_OK) {
+        return false;
+    }
+
+    uint8_t cmd = 0x02; /* GetFirmwareVersion */
+
+    if (!pn532_write_cmd(&cmd, 1)) {
+        return false;
+    }
+
+    if (!pn532_wait_ready(200)) {
+        return false;
+    }
+
+    if (!pn532_read_ack()) {
+        return false;
+    }
+
+    if (!pn532_wait_ready(200)) {
+        return false;
+    }
+
+    uint8_t resp[16];
+
+    if (!pn532_read_frame(resp, 13)) {
+        return false;
+    }
+
+    uint8_t sam[] = {
+        0x14, 0x01, 0x00, 0x00
+    };
+
+    if (!pn532_write_cmd(sam, sizeof sam)) {
+        return false;
+    }
+
+    if (!pn532_wait_ready(200)) {
+        return false;
+    }
+
+    if (!pn532_read_ack()) {
+        return false;
+    }
+
+    if (!pn532_wait_ready(200)) {
+        return false;
+    }
+
     uint8_t sresp[10];
+
     return pn532_read_frame(sresp, 8);
 }
 
@@ -305,18 +361,386 @@ bool hal_reader_write_sector(const card_uid_t *uid, uint8_t block,
 
 
 /* ---- Light sensors (high reading = clear) ---- */
-uint16_t hal_ldr_read(ldr_id_t sensor) { (void)sensor; return 4000; }
+static bool s_ldr_read_ok[2] = {false, false};   /* true if the most recent reading from this sensor succeeded */
 
-/* ---- Stepper / door ---- */
-void hal_motor_set(motor_cmd_t cmd) { (void)cmd; }
-bool hal_motor_done(void) { return true; }
+bool hal_ldr_init(void)
+{
+    bool success = true;
+
+    if (HAL_ADCEx_Calibration_Start(
+            &hadc2,
+            ADC_SINGLE_ENDED) != HAL_OK) {
+        success = false;
+    }
+
+    if (HAL_ADCEx_Calibration_Start(
+            &hadc3,
+            ADC_SINGLE_ENDED) != HAL_OK) {
+        success = false;
+    }
+
+    return success;
+}
+
+uint16_t hal_ldr_read(ldr_id_t sensor)
+{
+    ADC_HandleTypeDef *adc =
+        sensor == LDR_OUTER
+        ? &hadc2
+        : &hadc3;
+
+    uint16_t result = 0;
+
+    s_ldr_read_ok[sensor] = false;
+
+    if (HAL_ADC_Start(adc) != HAL_OK) {
+        return 0;
+    }
+
+    if (HAL_ADC_PollForConversion(adc, 2u) == HAL_OK) {
+        result = (uint16_t)HAL_ADC_GetValue(adc);
+        s_ldr_read_ok[sensor] = true;
+    }
+
+    (void)HAL_ADC_Stop(adc);
+
+    return result;
+}
+
+bool hal_ldr_last_read_ok(ldr_id_t sensor)
+{
+    return s_ldr_read_ok[sensor];
+}
+
+/* ---- Stepper / door ------------------------------------------------------ */
+
+/*
+ * This is a configurable starting value.
+ *
+ * Confirm the real motor's steps per revolution during bench testing.
+ */
+#define STEPPER_STEPS_PER_REVOLUTION 4096L
+
+#define STEPPER_QUARTER_TURN_STEPS \
+    (STEPPER_STEPS_PER_REVOLUTION / 4L)
+
+#define STEPPER_STEP_INTERVAL_MS 2u
+
+#define MOTOR_COIL_A_PORT GPIOC
+#define MOTOR_COIL_A_PIN  GPIO_PIN_5
+
+#define MOTOR_COIL_B_PORT GPIOA
+#define MOTOR_COIL_B_PIN  GPIO_PIN_12
+
+#define MOTOR_COIL_C_PORT GPIOC
+#define MOTOR_COIL_C_PIN  GPIO_PIN_7
+
+#define MOTOR_COIL_D_PORT GPIOB
+#define MOTOR_COIL_D_PIN  GPIO_PIN_2
+
+/*
+ * Eight-stage half-step sequence.
+ */
+static const uint8_t s_step_sequence[8][4] = {
+    {1, 0, 0, 0},
+    {1, 1, 0, 0},
+    {0, 1, 0, 0},
+    {0, 1, 1, 0},
+    {0, 0, 1, 0},
+    {0, 0, 1, 1},
+    {0, 0, 0, 1},
+    {1, 0, 0, 1}
+};
+
+static int32_t s_motor_position = 0;
+static int32_t s_motor_target = 0;
+
+static uint8_t s_motor_phase = 0;
+
+static uint32_t s_last_motor_step_ms = 0;
+
+static bool s_motor_active = false;
+
+/** Write one half-step pattern to the four motor coils. */
+static void motor_write_phase(uint8_t phase)
+{
+    HAL_GPIO_WritePin(MOTOR_COIL_A_PORT,MOTOR_COIL_A_PIN, 
+        s_step_sequence[phase][0] ? GPIO_PIN_SET : GPIO_PIN_RESET
+    );
+
+    HAL_GPIO_WritePin(MOTOR_COIL_B_PORT, MOTOR_COIL_B_PIN,
+        s_step_sequence[phase][1] ? GPIO_PIN_SET : GPIO_PIN_RESET
+    );
+
+    HAL_GPIO_WritePin(MOTOR_COIL_C_PORT, MOTOR_COIL_C_PIN,
+        s_step_sequence[phase][2] ? GPIO_PIN_SET : GPIO_PIN_RESET
+    );
+
+    HAL_GPIO_WritePin(MOTOR_COIL_D_PORT, MOTOR_COIL_D_PIN,
+        s_step_sequence[phase][3] ? GPIO_PIN_SET : GPIO_PIN_RESET
+    );
+}
+
+/** Release all motor coils. */
+static void motor_coils_off(void)
+{
+    HAL_GPIO_WritePin(MOTOR_COIL_A_PORT, MOTOR_COIL_A_PIN,GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_COIL_B_PORT, MOTOR_COIL_B_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_COIL_C_PORT, MOTOR_COIL_C_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(MOTOR_COIL_D_PORT, MOTOR_COIL_D_PIN, GPIO_PIN_RESET);
+}
+
+void hal_motor_set(motor_cmd_t cmd)
+{
+    switch (cmd) {
+    case MOTOR_OPEN_ENTRY:
+        /*
+         * 90 degrees to the right.
+         *
+         * Swap this sign with MOTOR_OPEN_EXIT if the physical installation is
+         * reversed.
+         */
+        s_motor_target = STEPPER_QUARTER_TURN_STEPS;
+        break;
+
+    case MOTOR_OPEN_EXIT:
+        /*
+         * 90 degrees to the left.
+         */
+        s_motor_target = -STEPPER_QUARTER_TURN_STEPS;
+        break;
+
+    case MOTOR_CLOSE:
+        /*
+         * Position zero is the original closed position.
+         */
+        s_motor_target = 0;
+        break;
+
+    case MOTOR_STOP:
+    default:
+        s_motor_target = s_motor_position;
+        s_motor_active = false;
+        motor_coils_off();
+        return;
+    }
+
+    s_motor_active =
+        s_motor_position != s_motor_target;
+
+    s_last_motor_step_ms = hal_millis();
+}
+
+void hal_motor_task(void)
+{
+    uint32_t now;
+    int8_t direction;
+
+    if (!s_motor_active) {
+        return;
+    }
+
+    now = hal_millis();
+
+    if ((now - s_last_motor_step_ms) <
+        STEPPER_STEP_INTERVAL_MS) {
+        return;
+    }
+
+    s_last_motor_step_ms = now;
+
+    direction =
+        s_motor_target > s_motor_position
+        ? 1
+        : -1;
+
+    /*
+     * Adding seven is equivalent to subtracting one modulo eight.
+     */
+    s_motor_phase = (uint8_t)(
+        (s_motor_phase +
+         (direction > 0 ? 1u : 7u))
+        & 0x07u
+    );
+
+    motor_write_phase(s_motor_phase);
+
+    s_motor_position += direction;
+
+    if (s_motor_position == s_motor_target) {
+        s_motor_active = false;
+
+        /*
+         * Keep the coils energised while open to hold the door position.
+         * Release them after returning to the closed position.
+         */
+        if (s_motor_target == 0) {
+            motor_coils_off();
+        }
+    }
+}
+
+bool hal_motor_done(void)
+{
+    return !s_motor_active;
+}
 
 /* ---- LED bar + direct LEDs ---- */
-void hal_led_bar_set(uint32_t mask) { (void)mask; }
-void hal_direct_led(uint8_t id, bool on) { (void)id; (void)on; }
+
+#define LED_RCLK_PORT GPIOB
+#define LED_RCLK_PIN  GPIO_PIN_7
+
+#define LED_SRCLK_PORT GPIOC
+#define LED_SRCLK_PIN  GPIO_PIN_0
+
+#define LED_SER_PORT GPIOB
+#define LED_SER_PIN  GPIO_PIN_15
+
+/*
+ * Set this to 1 if the physical LED order appears reversed.
+ */
+#define LED_BAR_REVERSE_ORDER 0
+
+/*
+ * Set this to 1 if zero turns an LED on.
+ */
+#define LED_BAR_ACTIVE_LOW 0
+
+static uint16_t reverse_led_bits(uint16_t value)
+{
+    uint16_t reversed = 0;
+
+    for (uint8_t i = 0; i < 16u; i++) {
+        reversed = (uint16_t)(
+            (reversed << 1) |
+            (value & 1u)
+        );
+
+        value >>= 1;
+    }
+
+    return reversed;
+}
+
+void hal_led_bar_set(uint32_t mask)
+{
+    uint16_t value = (uint16_t)mask;
+
+#if LED_BAR_REVERSE_ORDER
+    value = reverse_led_bits(value);
+#else
+    (void)reverse_led_bits;
+#endif
+
+#if LED_BAR_ACTIVE_LOW
+    value = (uint16_t)~value;
+#endif
+
+    /* Hold the latch low while the 16 bits are shifted.*/
+    HAL_GPIO_WritePin(LED_RCLK_PORT, LED_RCLK_PIN, GPIO_PIN_RESET);
+
+    for (int8_t bit = 15; bit >= 0; bit--) {
+        HAL_GPIO_WritePin(LED_SRCLK_PORT, LED_SRCLK_PIN, GPIO_PIN_RESET);
+
+        HAL_GPIO_WritePin(LED_SER_PORT, LED_SER_PIN, 
+            value & (uint16_t)(1u << bit) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+        HAL_GPIO_WritePin(LED_SRCLK_PORT, LED_SRCLK_PIN, GPIO_PIN_SET);
+    }
+
+    /* Transfer the shifted data to D5-D20. */
+    HAL_GPIO_WritePin(LED_RCLK_PORT, LED_RCLK_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(LED_RCLK_PORT, LED_RCLK_PIN, GPIO_PIN_RESET);
+}
+
+void hal_direct_led(uint8_t id, bool on)
+{
+    uint16_t pin;
+
+    switch (id) {
+    case 0:
+        pin = GPIO_PIN_10; /* D1 */
+        break;
+
+    case 1:
+        pin = GPIO_PIN_4;  /* D2 */
+        break;
+
+    case 2:
+        pin = GPIO_PIN_5;  /* D3 */
+        break;
+
+    case 3:
+        pin = GPIO_PIN_3;  /* D4 */
+        break;
+
+    default:
+        return;
+    }
+
+    HAL_GPIO_WritePin(GPIOB, pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 
 /* ---- Buzzer ---- */
-void hal_buzzer_tone(uint16_t freq_hz) { (void)freq_hz; }
+static uint16_t s_current_buzzer_frequency = 0;
+
+void hal_buzzer_tone(uint16_t frequency_hz){
+    uint32_t timer_clock;
+    uint32_t prescaler_division;
+    uint32_t timer_tick;
+    uint32_t period_counts;
+
+    if (frequency_hz == s_current_buzzer_frequency) {
+        return;
+    }
+
+    s_current_buzzer_frequency = frequency_hz;
+
+    if (frequency_hz == 0u) {
+        (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0u);
+
+        return;
+    }
+
+    /*
+     * TIM1 uses HCLK in the existing clock configuration.
+     */
+    timer_clock = HAL_RCC_GetHCLKFreq();
+
+    /* Reduce the timer clock to approximately 1 MHz. */
+    prescaler_division = timer_clock / 1000000u;
+
+    if (prescaler_division == 0u) {
+        prescaler_division = 1u;
+    }
+
+    timer_tick = timer_clock / prescaler_division;
+
+    /*
+     * PWM frequency:
+     * frequency = timer tick / period
+     * period = timer tick / frequency
+     */
+    period_counts = timer_tick / frequency_hz;
+
+    if (period_counts < 2u) {
+        period_counts = 2u;
+    }
+
+    if (period_counts > 65536u) {
+        period_counts = 65536u;
+    }
+
+    __HAL_TIM_SET_PRESCALER(&htim1, prescaler_division - 1u);
+    __HAL_TIM_SET_AUTORELOAD(&htim1, period_counts - 1u);
+
+    /* Half the period provides approximately 50% duty cycle. */
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, period_counts / 2u);
+    __HAL_TIM_SET_COUNTER(&htim1, 0u);
+    (void)HAL_TIM_GenerateEvent(&htim1, TIM_EVENTSOURCE_UPDATE);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+}
 
 /* ---- Keypad ---- */
 /* Non-blocking single-key scan with debounce. Returns a key exactly once per

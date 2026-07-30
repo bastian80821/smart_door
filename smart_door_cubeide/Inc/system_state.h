@@ -41,7 +41,10 @@ typedef enum {
     SYS_ALARM,            /* Security event (e.g. tailgate). Door holds open,     */
                           /* lights + buzzer active. See tailgate flag below.     */
     SYS_CONFIG,           /* Manager is in the admin menu (behind authorisation). */
-    SYS_SCHEDULED_UNLOCK  /* Door held unlocked for a configured event window.    */
+    SYS_SCHEDULED_UNLOCK,  /* Door held unlocked for a configured event window.    */
+    
+    SYS_ACCESS_DENIED,
+    SYS_ERROR
 } sys_state_t;
 
 /**
@@ -54,6 +57,17 @@ typedef enum {
     DIR_ENTRY,  /* Inward: outside -> inside.   */
     DIR_EXIT    /* Outward: inside -> outside.  */
 } sys_direction_t;
+
+/**
+ * The reason SYS_ALARM is active.
+ * This allows the existing generic SYS_ALARM state to support both the team's
+ * existing tailgate alarm and the new five-failed-attempt alarm.
+ */
+typedef enum {
+    ALARM_REASON_NONE = 0,
+    ALARM_REASON_TAILGATE,
+    ALARM_REASON_UNAUTHORIZED_ACCESS
+} sys_alarm_reason_t;
 
 /* --- Shared state accessors ------------------------------------------------ */
 /* Implemented once in system_state.c. All modules use these rather than a raw
@@ -80,5 +94,18 @@ void sys_set_tailgate_flag(bool v);
  *  The door module reads it to decide whether to stay open without a card. */
 bool sys_get_scheduled_unlock(void);
 void sys_set_scheduled_unlock(bool v);
+
+/* --- Alarm reason --------------------------------------------------------- */
+sys_alarm_reason_t sys_get_alarm_reason(void);
+void sys_set_alarm_reason(sys_alarm_reason_t reason);
+
+/* --- Consecutive failed access attempts ---------------------------------- */
+uint8_t sys_get_failed_attempts(void);
+
+/** Increase the counter by one and return its new value. */
+uint8_t sys_increment_failed_attempts(void);
+
+/** Reset the counter after a successful access or manual alarm reset. */
+void sys_reset_failed_attempts(void);
 
 #endif /* SYSTEM_STATE_H */

@@ -13,7 +13,30 @@
 #ifndef MGMT_H
 #define MGMT_H
 
+#include <stdbool.h>
+
 void mgmt_init(void);   /* draw the idle screen once at startup */
 void mgmt_task(void);   /* advance the interface; call every loop */
+
+/**
+ * Change the normal non-admin idle message.
+ * The existing admin screen still has priority while admin mode is active.
+ */
+void mgmt_set_idle_message(const char *top, const char *bottom);
+
+/**
+ * Temporarily give a system message priority over the menu and auth notices.
+ */
+void mgmt_set_system_message(const char *top, const char *bottom);
+
+/** Remove the temporary message and return to the normal idle display. */
+void mgmt_clear_system_message(void);
+
+/**
+ * Manual reset request.
+ * While a system message is active, pressing '#' creates a one-shot reset
+ * request for the passage controller.
+ */
+bool mgmt_take_reset_request(void);
 
 #endif /* MGMT_H */
