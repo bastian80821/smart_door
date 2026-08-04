@@ -1,23 +1,33 @@
 /**
  * passage.c
  * -----------------------------------------------------------------------------
- * Door-passage state machine using the team's existing SYS_* and DIR_* values.
+ * Door-passage state machine, built to the design journal's specification.
  *
- * Entry:
- *   LDR_1 covered
- *   -> NFC authorised
- *   -> open entry direction
- *   -> LDR_2 covered
- *   -> LDR_2 clear
- *   -> close
+ * TRIGGERS (from idle only, so a crossing in progress never starts a new cycle):
+ *   Outside sensor covered, inside clear  -> ENTRY request, requires a card.
+ *   Inside sensor covered, outside clear  -> EXIT request, no card required
+ *                                            (leaving is never authorised).
  *
- * Exit:
- *   LDR_2 covered
- *   -> NFC authorised
- *   -> open exit direction
- *   -> LDR_1 covered
- *   -> LDR_1 clear
- *   -> close
+ * SAFE OPEN:
+ *   Before the motor moves, the sensor on the side the door swings toward must
+ *   be clear, so the door can never open into a person. Entry swings inward and
+ *   waits on the inside sensor; exit swings outward and waits on the outside.
+ *
+ * OPEN WINDOW:
+ *   The door stays open for a fixed window and then closes once BOTH sensors
+ *   read clear. If someone is still standing in the doorway it simply keeps
+ *   waiting -- the door never closes on a covered sensor.
+ *
+ * TAILGATE INVARIANT:
+ *   During any open window exactly one authorised inward movement is expected,
+ *   so an unexpected break of the inside sensor means someone entered without
+ *   authorisation. On entry the authorised person accounts for one inside
+ *   break; on exit none are expected. Any break beyond the allowance raises the
+ *   alarm. This one rule covers both tailgating behind an entry and an
+ *   opportunist slipping in while somebody legitimately exits.
+ *
+ * A separate counter alarms after repeated card rejections, giving two
+ * independent alarm paths.
  * -----------------------------------------------------------------------------
  */
 
@@ -31,27 +41,40 @@
 #include "motor.h"
 #include "nfc.h"
 #include "system_state.h"
+#include "clock.h"
+#include "config.h"
 #include <stddef.h>
 
-#define NFC_SCAN_TIMEOUT_MS            10000u
-#define PASSAGE_TRIGGER_TIMEOUT_MS     15000u
-#define PASSAGE_CLEAR_TIMEOUT_MS       15000u
-#define MAX_FAILED_ATTEMPTS                5u
+#define NFC_SCAN_TIMEOUT_MS      10000u  /* how long we wait for a card         */
+#define WAIT_CLEAR_TIMEOUT_MS    15000u  /* destination side blocked for too long */
+#define OPEN_WINDOW_MS            5000u  /* journal: five-second passage window  */
+#define MAX_FAILED_ATTEMPTS           5u
 
 static uint32_t s_state_started_ms = 0;
+static uint32_t s_open_since_ms = 0;
 
-static bool s_expected_sensor_seen = false;
-static bool s_reset_closing = false;
+static uint8_t  s_inside_breaks = 0;      /* inside-sensor breaks this window   */
+static uint8_t  s_inside_allowance = 0;   /* how many are legitimate            */
 
-/** Return the sensor opposite the passage-request sensor. */
-static ldr_id_t expected_passage_sensor(void)
+static bool     s_reset_closing = false;
+
+/* Publish whether a configured unlock window is active right now. The clock
+ * must have been set by the manager; until then schedules stay inert. */
+static void update_scheduled_unlock(void)
 {
-    return sys_get_direction() == DIR_ENTRY
-         ? LDR_2
-         : LDR_1;
+    sys_set_scheduled_unlock(
+        clock_is_set() && config_event_active_at(clock_now_min())
+    );
 }
 
-/** Return the controller to its normal resting state. */
+/* The sensor on the side the door swings toward. Entry opens inward. */
+static ldr_id_t destination_sensor(sys_direction_t direction)
+{
+    return direction == DIR_ENTRY ? LDR_2 : LDR_1;
+}
+
+/* ---- State entries -------------------------------------------------------- */
+
 static void enter_idle(void)
 {
     nfc_set_locked(false);
@@ -60,9 +83,10 @@ static void enter_idle(void)
     sys_set_state(SYS_IDLE);
     sys_set_direction(DIR_NONE);
     sys_set_alarm_reason(ALARM_REASON_NONE);
+    sys_set_tailgate_flag(false);
 
     s_state_started_ms = hal_millis();
-    s_expected_sensor_seen = false;
+    s_inside_breaks = 0;
     s_reset_closing = false;
 
     ldr_clear_events();
@@ -71,59 +95,73 @@ static void enter_idle(void)
     lcd_feedback_show_idle();
 }
 
-/** Start the card-scan timeout after the first sensor is covered. */
-static void enter_authenticating(sys_direction_t direction)
+/* Entry only: ask for a card before anything moves. */
+static void enter_authenticating(void)
 {
-    sys_set_direction(direction);
+    sys_set_direction(DIR_ENTRY);
     sys_set_state(SYS_AUTHENTICATING);
 
     s_state_started_ms = hal_millis();
-    s_expected_sensor_seen = false;
 
     nfc_set_locked(false);
     nfc_start_request();
 
     feedback_set_mode(FEEDBACK_WAITING_FOR_NFC);
-    lcd_feedback_show_waiting(direction);
+    lcd_feedback_show_waiting(DIR_ENTRY);
 }
 
-/** Open the door after a valid card. */
-static void enter_granted(sys_direction_t direction)
+/* Hold until the destination side is clear, then move (the safe-open guard). */
+static void enter_wait_clear(sys_direction_t direction)
 {
-    bool started;
+    sys_set_direction(direction);
+    sys_set_state(SYS_WAIT_CLEAR);
 
-    /*
-     * A successful access resets consecutive failed attempts.
-     */
-    sys_reset_failed_attempts();
+    s_state_started_ms = hal_millis();
 
     nfc_cancel_request();
     nfc_set_locked(true);
 
-    ldr_clear_events();
-
     feedback_set_mode(
-        direction == DIR_ENTRY
-        ? FEEDBACK_GRANTED_ENTRY
-        : FEEDBACK_GRANTED_EXIT
+        direction == DIR_ENTRY ? FEEDBACK_GRANTED_ENTRY : FEEDBACK_GRANTED_EXIT
     );
-
     lcd_feedback_show_granted(direction);
+}
 
-    started = motor_open(direction);
+static void enter_system_error(void)
+{
+    if (sys_get_state() == SYS_ALARM) {
+        return;                       /* never downgrade an intrusion alarm */
+    }
 
-    if (!started) {
-        sys_set_state(SYS_ERROR);
-        feedback_set_mode(FEEDBACK_SYSTEM_ERROR);
-        lcd_feedback_show_system_error();
+    nfc_cancel_request();
+    nfc_set_locked(true);
+
+    /* Ordinary cards stay ignored, but the reader keeps listening so the
+     * administrative key can still override. The motor is idle in this state,
+     * so polling costs nothing that matters. */
+    auth_set_enabled(true);
+
+    sys_set_state(SYS_ERROR);
+    s_reset_closing = false;
+
+    feedback_set_mode(FEEDBACK_SYSTEM_ERROR);
+    lcd_feedback_show_system_error();
+}
+
+static void enter_opening(void)
+{
+    if (!motor_open(sys_get_direction())) {
+        enter_system_error();
         return;
     }
+
+    sys_reset_failed_attempts();
+    ldr_clear_events();
 
     sys_set_state(SYS_OPENING);
     s_state_started_ms = hal_millis();
 }
 
-/** Run the finite denied feedback pattern. */
 static void enter_access_denied(void)
 {
     nfc_cancel_request();
@@ -138,17 +176,14 @@ static void enter_access_denied(void)
     lcd_feedback_show_denied();
 }
 
-/** Lock the system after five consecutive denied cards. */
-static void enter_unauthorized_alarm(void)
+static void enter_alarm(void)
 {
     nfc_cancel_request();
     nfc_set_locked(true);
 
-    /*
-     * The fifth denial happens before the door opens, so the motor should
-     * already be at its original closed position.
-     */
-    motor_stop();
+    /* Same reasoning as the fault state: the override key must be audible
+     * while the system is locked down. */
+    auth_set_enabled(true);
 
     sys_set_direction(DIR_NONE);
     sys_set_alarm_reason(ALARM_REASON_UNAUTHORIZED_ACCESS);
@@ -158,26 +193,7 @@ static void enter_unauthorized_alarm(void)
     lcd_feedback_show_unauthorized();
 }
 
-/** Enter the locked system-error state. */
-static void enter_system_error(void)
-{
-    /*
-     * Do not replace the higher-priority unauthorized-access alarm.
-     */
-    if (sys_get_state() == SYS_ALARM) {
-        return;
-    }
-
-    nfc_cancel_request();
-    nfc_set_locked(true);
-
-    sys_set_state(SYS_ERROR);
-
-    s_reset_closing = false;
-
-    feedback_set_mode(FEEDBACK_SYSTEM_ERROR);
-    lcd_feedback_show_system_error();
-}
+/* ---- Init ----------------------------------------------------------------- */
 
 void passage_init(void)
 {
@@ -195,10 +211,6 @@ void passage_init(void)
     sys_set_alarm_reason(ALARM_REASON_NONE);
     sys_reset_failed_attempts();
 
-    /*
-     * Enter the normal system-error state when required hardware
-     * cannot be initialised.
-     */
     if (!ldr_ready || !nfc_is_ready()) {
         enter_system_error();
         return;
@@ -207,88 +219,102 @@ void passage_init(void)
     enter_idle();
 }
 
+/* ---- Main task ------------------------------------------------------------ */
+
 void passage_task(void)
 {
     uint32_t now = hal_millis();
     sys_state_t state = sys_get_state();
 
-    /*
-     * '#' is captured by mgmt while an alarm or system-error LCD message is
-     * active.
-     */
+    update_scheduled_unlock();
+
     if (mgmt_take_reset_request()) {
         (void)passage_manual_reset();
     }
 
-    /*
-     * Hardware and reader errors lock the normal passage system.
-     */
-    if (state != SYS_ALARM &&
-        state != SYS_ERROR &&
-        (ldr_has_error() ||
-         motor_has_error() ||
-         !nfc_is_ready())) {
+    /* An override is only meaningful when the door is at rest. Presenting the
+     * administrative key while a cycle is already running would otherwise latch
+     * a request that fires the moment the door finishes, reopening it for no
+     * reason. Discard it instead; the door is already doing what was asked.
+     * The request is kept in the alarm and fault states, where clearing the
+     * lockout and then opening is exactly the intended override behaviour. */
+    switch (state) {
+    case SYS_WAIT_CLEAR:
+    case SYS_OPENING:
+    case SYS_OPEN:
+    case SYS_CLOSING:
+    case SYS_SCHEDULED_UNLOCK:
+        (void)auth_take_override_request();
+        break;
+    default:
+        break;
+    }
 
+    /* Hardware faults lock the passage system, but never mask an alarm. */
+    if (state != SYS_ALARM && state != SYS_ERROR &&
+        (ldr_has_error() || motor_has_error() || !nfc_is_ready())) {
         enter_system_error();
         return;
     }
 
-    switch (sys_get_state()) {
-    /* --------------------------------------------------------------------- */
-    case SYS_IDLE: {
-        sys_direction_t direction;
+    switch (state) {
 
-        /*
-         * Do not begin a normal passage sequence while the existing admin
-         * window is active.
-         */
+    /* ---------------------------------------------------------------- IDLE */
+    case SYS_IDLE: {
+        /* Read both events first: the accessors clear them when read. */
+        bool outside_broke = ldr_became_covered(LDR_1);
+        bool inside_broke  = ldr_became_covered(LDR_2);
+
+        /* The administrative key is an override: it opens the door on its own,
+         * without a sensor request, while also arming the admin menu. */
+        if (auth_take_override_request()) {
+            enter_wait_clear(DIR_ENTRY);
+            break;
+        }
+
+        /* A configured unlock window holds the door open for its duration. */
+        if (sys_get_scheduled_unlock()) {
+            enter_wait_clear(DIR_ENTRY);
+            break;
+        }
+
+        /* Admin mode owns the interface; do not start a passage underneath it. */
         if (auth_is_admin()) {
             break;
         }
 
-        direction = ldr_take_request_direction();
-
-        /*
-         * If both sensors are currently blocked, direction is unsafe or
-         * ambiguous. Wait until the doorway clears.
-         */
-        if (direction != DIR_NONE &&
-            !ldr_any_covered()) {
+        /* Both sides blocked at once is ambiguous -- wait for the doorway to
+         * settle rather than guessing a direction. */
+        if (outside_broke && inside_broke) {
             break;
         }
 
-        if (direction != DIR_NONE) {
-            enter_authenticating(direction);
+        if (outside_broke && !ldr_is_covered(LDR_2)) {
+            enter_authenticating();            /* entry: card required */
         }
-
+        else if (inside_broke && !ldr_is_covered(LDR_1)) {
+            enter_wait_clear(DIR_EXIT);        /* exit: no card required */
+        }
         break;
     }
 
-    /* --------------------------------------------------------------------- */
+    /* ------------------------------------------------------ AUTHENTICATING */
     case SYS_AUTHENTICATING: {
         nfc_result_t result;
 
-        if ((now - s_state_started_ms) >=
-            NFC_SCAN_TIMEOUT_MS) {
-
-            /*
-             * No card was presented in time.
-             */
-            enter_idle();
+        if ((now - s_state_started_ms) >= NFC_SCAN_TIMEOUT_MS) {
+            enter_idle();                      /* nobody presented a card */
             break;
         }
 
         result = nfc_poll_result();
 
         if (result == NFC_RESULT_AUTHORIZED) {
-            enter_granted(sys_get_direction());
+            enter_wait_clear(DIR_ENTRY);
         }
         else if (result == NFC_RESULT_DENIED) {
-            uint8_t failed =
-                sys_increment_failed_attempts();
-
-            if (failed >= MAX_FAILED_ATTEMPTS) {
-                enter_unauthorized_alarm();
+            if (sys_increment_failed_attempts() >= MAX_FAILED_ATTEMPTS) {
+                enter_alarm();
             } else {
                 enter_access_denied();
             }
@@ -296,190 +322,202 @@ void passage_task(void)
         else if (result == NFC_RESULT_ERROR) {
             enter_system_error();
         }
-
         break;
     }
 
-    /* --------------------------------------------------------------------- */
-    case SYS_OPENING:
+    /* --------------------------------------------------------- WAIT_CLEAR */
+    case SYS_WAIT_CLEAR:
+        /* Do not move until the side we swing toward is empty. */
+        if (!ldr_is_covered(destination_sensor(sys_get_direction()))) {
+            enter_opening();
+        }
+        else if ((now - s_state_started_ms) >= WAIT_CLEAR_TIMEOUT_MS) {
+            enter_idle();                      /* gave up; door never moved */
+        }
+        break;
+
+    /* ------------------------------------------------------------ OPENING */
+    case SYS_OPENING: {
+        /* The safe-open rule applies while the door is travelling, not only
+         * before it starts: if somebody steps into the side the door is
+         * swinging toward, hold the movement until they are clear rather than
+         * pushing the door into them. */
+        if (ldr_is_covered(destination_sensor(sys_get_direction()))) {
+            motor_hold();
+            break;
+        }
+
+        motor_resume();                 /* no-op unless we were holding */
 
         if (motor_get_state() == DOOR_OPEN) {
+            /* During a scheduled window the door simply stays open for the
+             * whole event rather than running the five-second passage cycle. */
+            if (sys_get_scheduled_unlock()) {
+                sys_set_state(SYS_SCHEDULED_UNLOCK);
+                ldr_clear_events();
+                lcd_feedback_show_scheduled();
+                break;
+            }
+
             sys_set_state(SYS_OPEN);
 
-            s_state_started_ms = now;
-            s_expected_sensor_seen = false;
+            s_open_since_ms = now;
+            s_inside_breaks = 0;
 
-            /*
-             * Ignore sensor transitions that happened before the door reached
-             * its open position.
-             */
-            ldr_clear_events();
+            /* One inside break is expected from an authorised entrant; an
+             * exiting person is already outside the door's inner sensor. */
+            s_inside_allowance =
+                (sys_get_direction() == DIR_ENTRY) ? 1u : 0u;
+
+            ldr_clear_events();                /* ignore anything during travel */
+            lcd_feedback_show_open(sys_get_direction());
         }
-
-        break;
-
-    /* --------------------------------------------------------------------- */
-    case SYS_OPEN: {
-        ldr_id_t expected =
-            expected_passage_sensor();
-
-        if (!s_expected_sensor_seen) {
-            /*
-             * Wait for the opposite sensor.
-             */
-            if (ldr_became_covered(expected) ||
-                ldr_is_covered(expected)) {
-
-                s_expected_sensor_seen = true;
-                s_state_started_ms = now;
-            }
-            else if ((now - s_state_started_ms) >=
-                     PASSAGE_TRIGGER_TIMEOUT_MS) {
-
-                /*
-                 * Keep the door open and lock into SYS_ERROR.
-                 */
-                enter_system_error();
-            }
-        }
-        else {
-            /*
-             * The opposite sensor was covered. Wait until it and the initiating
-             * sensor are both clear.
-             */
-            if (!ldr_is_covered(expected) &&
-                ldr_all_clear()) {
-
-                if (!motor_close()) {
-                    enter_system_error();
-                } else {
-                    sys_set_state(SYS_CLOSING);
-                    s_state_started_ms = now;
-                }
-            }
-            else if ((now - s_state_started_ms) >=
-                     PASSAGE_CLEAR_TIMEOUT_MS) {
-
-                /*
-                 * A person or object remained in the doorway for too long.
-                 * Keep the door open.
-                 */
-                enter_system_error();
-            }
-        }
-
         break;
     }
 
-    /* --------------------------------------------------------------------- */
-    case SYS_CLOSING:
+    /* --------------------------------------------------------------- OPEN */
+    case SYS_OPEN: {
+        /* Tailgate invariant: count inside-sensor breaks against the
+         * allowance for this direction. */
+        if (ldr_became_covered(LDR_2)) {
+            s_inside_breaks++;
 
-        /*
-         * Never continue closing while either sensor is covered.
-         */
+            if (s_inside_breaks > s_inside_allowance) {
+                sys_set_tailgate_flag(true);
+                enter_alarm();
+                break;
+            }
+        }
+        (void)ldr_became_covered(LDR_1);       /* consume; not part of the rule */
+
+        /* Close once the window has elapsed AND the doorway is empty. If it is
+         * still occupied we keep waiting -- never close on a person. */
+        if ((now - s_open_since_ms) >= OPEN_WINDOW_MS && ldr_all_clear()) {
+            if (motor_close()) {
+                sys_set_state(SYS_CLOSING);
+                s_state_started_ms = now;
+            } else {
+                enter_system_error();
+            }
+        }
+        break;
+    }
+
+    /* ------------------------------------------------------------ CLOSING */
+    case SYS_CLOSING:
+        /* Interruptible: an obstruction sends the door back open. */
         if (ldr_any_covered()) {
-            (void)motor_reopen(sys_get_direction());
-            enter_system_error();
+            if (motor_reopen(sys_get_direction())) {
+                sys_set_state(SYS_OPENING);
+            } else {
+                enter_system_error();
+            }
             break;
         }
 
         if (motor_get_state() == DOOR_CLOSED) {
             enter_idle();
         }
-
         break;
 
-    /* --------------------------------------------------------------------- */
-    case SYS_ACCESS_DENIED:
+    /* -------------------------------------------------- SCHEDULED_UNLOCK */
+    case SYS_SCHEDULED_UNLOCK:
+        /* Held open for the whole event. No card is required and the tailgate
+         * rule is suspended, because during a scheduled open period everyone is
+         * expected to pass freely (see the design journal). Close once the
+         * window ends and the doorway is empty. */
+        if (!sys_get_scheduled_unlock() && ldr_all_clear()) {
+            if (motor_close()) {
+                sys_set_state(SYS_CLOSING);
+                s_state_started_ms = now;
+            } else {
+                enter_system_error();
+            }
+        }
+        break;
 
+    /* ------------------------------------------------------ ACCESS_DENIED */
+    case SYS_ACCESS_DENIED:
         if (feedback_is_complete()) {
             enter_idle();
         }
-
         break;
 
-    /* --------------------------------------------------------------------- */
+    /* -------------------------------------------------------------- ALARM */
     case SYS_ALARM:
-
-        /*
-         * All normal LDR and NFC access remains disabled.
-         *
-         * Only passage_manual_reset() may leave this state.
-         */
+        /* A reset requested while the door was still open has to bring it home
+         * before the lockout can end, so the closing movement is completed
+         * here. Without this the alarm would latch forever, because tailgating
+         * is always detected while the door is open. */
+        if (s_reset_closing) {
+            if (ldr_any_covered()) {
+                /* Someone is back in the doorway: reopen and abandon the
+                 * reset rather than closing on them. */
+                (void)motor_reopen(sys_get_direction());
+                s_reset_closing = false;
+            }
+            else if (motor_get_state() == DOOR_CLOSED) {
+                sys_reset_failed_attempts();
+                sys_set_tailgate_flag(false);
+                sys_set_alarm_reason(ALARM_REASON_NONE);
+                s_reset_closing = false;
+                enter_idle();
+            }
+        }
         break;
 
-    /* --------------------------------------------------------------------- */
+    /* -------------------------------------------------------------- ERROR */
     case SYS_ERROR:
-
-        /*
-         * If an obstruction appears during a manual-reset closing movement,
-         * reopen and remain in SYS_ERROR.
-         */
-        if (motor_get_state() == DOOR_CLOSING &&
-            ldr_any_covered()) {
-
+        if (motor_get_state() == DOOR_CLOSING && ldr_any_covered()) {
             (void)motor_reopen(sys_get_direction());
             s_reset_closing = false;
         }
 
-        if (s_reset_closing &&
-            motor_get_state() == DOOR_CLOSED) {
-
+        if (s_reset_closing && motor_get_state() == DOOR_CLOSED) {
             enter_idle();
         }
-
         break;
 
-    /*
-     * Existing team states are left available for their original modules.
-     */
-    case SYS_WAIT_CLEAR:
-    case SYS_CONFIG:
-    case SYS_SCHEDULED_UNLOCK:
     default:
         break;
     }
 }
 
+/* ---- Manual reset ('#' while an alarm or error is displayed) --------------- */
+
 bool passage_manual_reset(void)
 {
     sys_state_t state = sys_get_state();
 
-    if (state != SYS_ALARM &&
-        state != SYS_ERROR) {
+    if (state != SYS_ALARM && state != SYS_ERROR) {
         return false;
     }
 
-    /*
-     * Do not reset or close while someone is blocking the doorway.
-     */
+    /* Never reset or drive the door while the doorway is occupied. */
     if (!ldr_all_clear()) {
         return false;
     }
 
     if (state == SYS_ALARM) {
         if (motor_get_state() != DOOR_CLOSED) {
-            return false;
+            /* Bring the door home first; the alarm clears once it is shut. */
+            if (!motor_is_moving() && !motor_force_close()) {
+                return false;
+            }
+            s_reset_closing = true;
+            return true;
         }
 
         sys_reset_failed_attempts();
+        sys_set_tailgate_flag(false);
         sys_set_alarm_reason(ALARM_REASON_NONE);
-
         enter_idle();
         return true;
     }
 
-    /*
-     * Retry PN532 initialisation if the error originated during startup.
-     */
-    if (!nfc_is_ready() &&
-        !nfc_reinitialize()) {
+    if (!nfc_is_ready() && !nfc_reinitialize()) {
         return false;
     }
-
-    /*
-     * A continuing LDR ADC failure will immediately re-enter SYS_ERROR.
-     */
     if (ldr_has_error()) {
         return false;
     }
@@ -491,14 +529,10 @@ bool passage_manual_reset(void)
         return true;
     }
 
-    /*
-     * The door may have been intentionally left open after a passage timeout.
-     */
     if (!motor_is_moving()) {
         if (!motor_force_close()) {
             return false;
         }
-
         s_reset_closing = true;
         return true;
     }
