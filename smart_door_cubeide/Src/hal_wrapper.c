@@ -243,7 +243,7 @@ bool hal_reader_poll(card_uid_t *uid) {
     uint8_t cmd[] = {0x4A, 0x01, 0x00};       /* InListPassiveTarget: 1 target, type A */
     if (!pn532_write_cmd(cmd, sizeof cmd)) return false;
     if (!pn532_wait_ready(50) || !pn532_read_ack()) return false;
-    if (!pn532_wait_ready(60)) return false;  /* no card -> no reply soon */
+    if (!pn532_wait_ready(40)) return false;  /* no card -> no reply soon */
 
     uint8_t r[30];
     if (!pn532_read_frame(r, 25)) return false;
