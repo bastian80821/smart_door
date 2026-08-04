@@ -32,6 +32,9 @@ void mgmt_set_system_message(const char *top, const char *bottom);
 /** Remove the temporary message and return to the normal idle display. */
 void mgmt_clear_system_message(void);
 
+
+void mgmt_set_critical_message(const char *top, const char *bottom);
+
 /**
  * Manual reset request.
  * While a system message is active, pressing '#' creates a one-shot reset

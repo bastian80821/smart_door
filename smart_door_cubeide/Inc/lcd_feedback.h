@@ -21,5 +21,8 @@ void lcd_feedback_show_granted(sys_direction_t direction);
 void lcd_feedback_show_denied(void);
 void lcd_feedback_show_unauthorized(void);
 void lcd_feedback_show_system_error(void);
+void lcd_feedback_show_open(sys_direction_t direction);
+void lcd_feedback_show_open(sys_direction_t direction);
+void lcd_feedback_show_scheduled(void);
 
 #endif /* LCD_FEEDBACK_H */

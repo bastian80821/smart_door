@@ -28,6 +28,16 @@ void lcd_feedback_task(void)
      */
 }
 
+void lcd_feedback_show_open(sys_direction_t direction)
+{
+    mgmt_set_system_message(
+        "Door Open",
+        direction == DIR_ENTRY ? "Please enter" : "Please exit"
+    );
+}
+
+
+
 void lcd_feedback_show_idle(void)
 {
     mgmt_clear_system_message();
@@ -56,13 +66,15 @@ void lcd_feedback_show_denied(void)
 
 void lcd_feedback_show_unauthorized(void)
 {
-    /*
-     * The complete message is split across the 16x2 display.
-     */
-    mgmt_set_system_message("Unauthorized", "Access");
+    mgmt_set_critical_message("Unauthorized", "Access  # = reset");
+}
+
+void lcd_feedback_show_scheduled(void)
+{
+    mgmt_set_system_message("Scheduled Open", "No card needed");
 }
 
 void lcd_feedback_show_system_error(void)
 {
-    mgmt_set_system_message("System Error", "# = reset");
+    mgmt_set_critical_message("System Error", "# = reset");
 }
