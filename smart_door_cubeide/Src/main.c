@@ -37,6 +37,8 @@
 #include "nfc.h"
 #include "passage.h"
 #include "system_state.h"
+#include <stdio.h>
+#include "clock.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -111,11 +113,12 @@ int main(void)
   HAL_Delay(150); // Gives time for the PN532 to finish powering up.
 
   //CLEARS ALL IDS TEMPORARILY FOR DEMONSTRATION PURPOSES
-  idstore_clear_all();
   auth_init();
   mgmt_init();
-  
+  clock_init();
   passage_init();
+
+  
   /* USER CODE END 2 */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -124,16 +127,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	auth_task();
 
+	auth_task();
 	nfc_task();
 	ldr_task();
 	motor_task();
 	feedback_task();
 	lcd_feedback_task();
 	passage_task();
-
 	mgmt_task();
+
+
 
   }
   /* USER CODE END 3 */

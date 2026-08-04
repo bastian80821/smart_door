@@ -35,6 +35,11 @@ bool motor_force_close(void);
 
 void motor_stop(void);
 
+/** Hold a movement part-way because of an obstruction, and resume it once the
+ *  way is clear. The movement timeout is suspended while held. */
+void motor_hold(void);
+void motor_resume(void);
+
 door_state_t motor_get_state(void);
 
 bool motor_is_moving(void);

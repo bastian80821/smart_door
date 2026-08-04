@@ -39,8 +39,8 @@ typedef struct {
  *
  * Replace these after recording real covered and uncovered ADC readings.
  */
-#define LDR_DEFAULT_COVERED_THRESHOLD  1800u
-#define LDR_DEFAULT_CLEAR_THRESHOLD    2200u
+#define LDR_DEFAULT_COVERED_THRESHOLD  700u
+#define LDR_DEFAULT_CLEAR_THRESHOLD    1100u
 #define LDR_DEFAULT_SAMPLE_PERIOD_MS     10u
 #define LDR_DEFAULT_DEBOUNCE_MS           50u
 
