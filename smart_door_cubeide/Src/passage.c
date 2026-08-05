@@ -221,6 +221,37 @@ void passage_init(void)
 
 /* ---- Main task ------------------------------------------------------------ */
 
+/* Clear an alarm or fault on the authority of the administrative key. Unlike
+ * the keypad reset this is not gated on the doorway being clear: the person
+ * holding the key is standing at the door. The alarm stops at once and the door
+ * is then closed through the ordinary closing state, which still reopens if
+ * something is in the way. */
+static void admin_override_reset(void)
+{
+    sys_reset_failed_attempts();
+    sys_set_tailgate_flag(false);
+    sys_set_alarm_reason(ALARM_REASON_NONE);
+    motor_clear_error();
+
+    s_reset_closing = false;
+
+    if (motor_get_state() == DOOR_CLOSED) {
+        enter_idle();
+        return;
+    }
+
+    if (!motor_is_moving()) {
+        (void)motor_force_close();
+    }
+
+    feedback_set_mode(FEEDBACK_IDLE);        /* alarm stops immediately */
+    nfc_set_locked(false);
+    nfc_cancel_request();
+
+    sys_set_state(SYS_CLOSING);
+    s_state_started_ms = hal_millis();
+}
+
 void passage_task(void)
 {
     uint32_t now = hal_millis();
@@ -228,7 +259,13 @@ void passage_task(void)
 
     update_scheduled_unlock();
 
-    if (mgmt_take_reset_request()) {
+    if (mgmt_take_admin_reset_request()) {
+        if (state == SYS_ALARM || state == SYS_ERROR) {
+            admin_override_reset();
+            return;
+        }
+    }
+    else if (mgmt_take_reset_request()) {
         (void)passage_manual_reset();
     }
 
