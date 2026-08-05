@@ -35,6 +35,8 @@ void mgmt_clear_system_message(void);
 
 void mgmt_set_critical_message(const char *top, const char *bottom);
 
+bool mgmt_take_admin_reset_request(void);
+
 /**
  * Manual reset request.
  * While a system message is active, pressing '#' creates a one-shot reset
