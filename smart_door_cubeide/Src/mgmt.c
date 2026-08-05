@@ -19,6 +19,7 @@
 #include "config.h"
 #include "auth.h"
 #include "clock.h"
+#include "idstore.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -34,13 +35,14 @@ typedef enum {
     ST_SHOW, ST_THEME, ST_NOTICE
 } mstate_t;
 
-typedef enum { M_EVENT, M_CLOCK, M_SHOW, M_THEME, M_COUNT } menu_item_t;
+typedef enum { M_EVENT, M_CLOCK, M_SHOW, M_THEME, M_CLEAR, M_COUNT } menu_item_t;
 
 static const char *const MENU_LABELS[M_COUNT] = {
     "Set event",
     "Set clock",
     "Show config",
     "Set theme",
+    "Clear cards",
 };
 
 static const char *const THEME_NAMES[] = {
@@ -69,6 +71,10 @@ static bool system_message_dirty = false;
  * progress does not, so an admin using the menu is not interrupted by it. */
 static bool system_message_critical = false;
 static bool reset_requested = false;
+/* An override by the administrative key is stronger than the '#' reset: it is
+ * not conditional on the doorway sensors, because an authorised person is
+ * physically present and can see the door. */
+static bool admin_reset_requested = false;
 
 static bool custom_idle_enabled = false;
 
@@ -277,6 +283,15 @@ bool mgmt_take_reset_request(void)
     return result;
 }
 
+bool mgmt_take_admin_reset_request(void)
+{
+    bool result = admin_reset_requested;
+
+    admin_reset_requested = false;
+
+    return result;
+}
+
 void mgmt_task(void) {
     /* Auth events are read first. The admin key must be acknowledged even when
      * a door message is on screen, otherwise presenting it while the door is
@@ -290,7 +305,7 @@ void mgmt_task(void) {
          * reset is requested from the passage controller rather than merely
          * hiding the message, so the buzzer and lights actually stop and the
          * system unlocks instead of alarming behind a friendlier screen. */
-        reset_requested = true;
+        admin_reset_requested = true;
 
         system_message_active = false;
         system_message_dirty = false;
@@ -410,6 +425,19 @@ void mgmt_task(void) {
                 case M_CLOCK: go(ST_CLOCK_SET);  break;
                 case M_SHOW:  go(ST_SHOW);       break;
                 case M_THEME: theme_pick = config_get()->active_theme; go(ST_THEME); break;
+
+                case M_CLEAR:
+                    /* Wipes every enrolled card. Acts immediately rather than
+                     * asking for confirmation: on a two-row display an extra
+                     * prompt costs more than it protects, and re-enrolling is
+                     * a single tap. */
+                    if (idstore_clear_all()) {
+                        notice("Cards cleared", ST_MENU);
+                    } else {
+                        notice("Clear failed", ST_MENU);
+                    }
+                    break;
+
                 default: break;
             }
         }
