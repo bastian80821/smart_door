@@ -3,8 +3,7 @@
  * -----------------------------------------------------------------------------
  * Threshold, hysteresis and debounce processing for the two passage LDRs.
  *
- * The existing HAL comment defines a higher ADC reading as brighter/clear.
- * Therefore a low ADC value means the LDR is covered.
+ * Low ADC value -> sensor covered -> door blocked
  * -----------------------------------------------------------------------------
  */
 #include "ldr.h"
@@ -71,7 +70,7 @@ static void update_sensor(ldr_id_t id, uint32_t now)
     candidate = calculate_candidate(sensor);
 
     /*
-     * The possible state changed, so restart its debounce timer.
+     * The possible state changed, restart debounce timer
      */
     if (candidate != sensor->candidate_covered) {
         sensor->candidate_covered = candidate;

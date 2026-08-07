@@ -1,16 +1,15 @@
 /**
  * auth.h
  * -----------------------------------------------------------------------------
- * Access control: reads cards from the PN532, decides grant/deny against the
- * flash-backed ID list plus a per-card secret, and handles the admin key.
+ * Reads cards from the PN532, decides grant/deny against the
+ * flash-backed ID list plus secret, and handles the admin key.
  *
- * Display policy: auth NEVER touches the LCD. It produces events; the
- * management module owns the screen and renders them.
+ * Auth never touches the LCD, but produces events. The management module owns the screen and renders them.
  *
- * Admin model: presenting the admin key opens an admin window that stays open
+ * Presenting the admin key opens an admin window that stays open
  * while there is activity and closes after a period of inactivity. While it is
  * open, tapping an unknown card enrols it and the config menu is reachable. The
- * same tap also raises a one-shot override request so the door opens.
+ * same tap also enables override, so alarms are cleared and the door opens.
  *
  * Non-blocking: call auth_task() once per main loop.
  * -----------------------------------------------------------------------------
@@ -43,8 +42,8 @@ bool auth_is_admin(void);
  * so navigating the menu keeps admin mode alive. */
 void auth_touch(void);
 
-/* One-shot: true once after the admin key was presented, so the door can
- * perform an override (emergency) opening. */
+/* True once after the admin key was presented, so the door can
+ * perform an override opening. */
 bool auth_take_override_request(void);
 
 /* One-shot results consumed by the passage controller via nfc.c. */
@@ -57,7 +56,7 @@ bool auth_access_denied(void);
  * card presented at random never drives the door. */
 void auth_set_passage_request(bool active);
 
-/* Mute the reader entirely while the door is moving or the system is locked. */
+/* Mute reader while door is moving or the system is locked. (avoid unresponsiveness) */
 void auth_set_enabled(bool enabled);
 
 /* True if the PN532 initialised successfully at startup. */

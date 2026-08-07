@@ -118,7 +118,7 @@ bool nfc_is_ready(void)
 bool nfc_reinitialize(void)
 {
     /*
-     * Reuse the existing authentication initialisation.
+     * Reuse the existing auth initialisation.
      */
     auth_init();
     nfc_init();

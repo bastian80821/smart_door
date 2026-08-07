@@ -2,10 +2,8 @@
  * idstore.h
  * -----------------------------------------------------------------------------
  * Persistent list of authorised card UIDs, kept in a reserved flash page so
- * enrolments survive power cycles. The admin adds and removes cards at runtime;
- * this module only answers "is this UID on the list?". Card *verification*
- * (MIFARE sector-key auth) happens in the auth module -- membership and
- * verification are deliberately separate concerns.
+ * enrolments survive power cycles. The admin adds and removes cards at runtime.
+ * Card verification with sector encryption happens in the auth module.
  *
  * UIDs are 4 bytes (MIFARE Classic S50) or 7 bytes (some cards/fobs).
  * -----------------------------------------------------------------------------

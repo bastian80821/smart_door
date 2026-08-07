@@ -1,12 +1,12 @@
 /**
  * clock.c
  * -----------------------------------------------------------------------------
- * Software time-of-day clock (see clock.h).
+ * Software time-of-day clock
  *
- * We record the wall-clock time at the moment it is set, together with the
- * millisecond tick at that instant. The current time is then the set time plus
- * the elapsed minutes, taken modulo a day. Using the tick difference means the
- * 32-bit millisecond counter wrapping (~49 days) does not corrupt the result.
+ * Record the wall-clock time at the moment it is set, together with the
+ * millisecond tick at that instant. Current time =  set time plus elapsed
+ * minutes, taken modulo a day. Using the tick difference means the
+ * 32-bit counter wrapping (49 days) does not corrupt the result.
  * -----------------------------------------------------------------------------
  */
 #include "clock.h"
@@ -26,7 +26,7 @@ void clock_init(void) {
 
 void clock_set(uint8_t hours, uint8_t minutes) {
     if (hours > 23u || minutes > 59u) {
-        return;                         /* caller validates; ignore nonsense */
+        return;                         /* caller validates, ignore nonsense */
     }
     s_set_minute  = (uint16_t)(hours * 60u + minutes);
     s_set_tick_ms = hal_millis();

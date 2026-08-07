@@ -1,12 +1,12 @@
 /**
  * config.c
  * -----------------------------------------------------------------------------
- * Backing storage + accessors for the shared system configuration (config.h).
- * Also the real implementation of config_event_active_at(), including the
+ * Backing storage + accessors for the shared system configuration.
+ * Also implements config_event_active_at(), including the
  * wrap-past-midnight case. Times are minutes since midnight (0..1439).
  *
- * When flash persistence is added later, config_set_* are the single place to
- * hook the write-back -- feature code does not change.
+ * If flash persistence is added later, config_set_* are the single place to
+ * hook the write-back
  * -----------------------------------------------------------------------------
  */
 #include "config.h"

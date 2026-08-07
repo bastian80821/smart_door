@@ -1,11 +1,11 @@
 /**
  * idstore.c
  * -----------------------------------------------------------------------------
- * Flash-backed authorised-UID list (see idstore.h).
+ * Flash-backed authorised-UID list.
  *
- * WHY A LOG-STRUCTURED LAYOUT:
+ * Log structured layout:
  *   STM32F3 flash programs in 16-bit half-words and can only clear bits (1->0)
- *   without a full page erase. So we never overwrite in place: adding a card
+ *   without a full page erase. Never overwrite in place: adding a card
  *   appends to the next empty slot, removing one clears its status word to
  *   "deleted", and only when the page fills do we compact (copy the live
  *   entries out, erase the page once, write them back). This keeps erases rare
@@ -17,8 +17,8 @@
 #include <string.h>
 
 /* Reserve the LAST 2 KB page of the 512 KB device. Code sits at the start of
- * flash and is far smaller than this, so the page is free. If the firmware ever
- * grows toward 510 KB, carve this region out in the linker script to be safe. */
+ * flash and is much smaller than this, so the page is free.
+ */
 #define STORE_BASE  0x0807F800UL
 #define STORE_SIZE  2048U
 
@@ -55,8 +55,8 @@ static bool flash_erase_store(void) {
     return HAL_FLASHEx_Erase(&er, &page_error) == HAL_OK;
 }
 
-/* Program a slot: data half-words first, status LAST -- so a power loss
- * mid-write leaves the slot EMPTY, never a half-written "active" entry. */
+/* Program a slot: data half-words first, status LAST -  power loss
+ * mid-write leaves the slot empty, never a half-written active entry. */
 static bool write_slot(uint16_t index, const uint8_t *uid, uint8_t len) {
     id_slot_t s;
     s.status = SLOT_ACTIVE;
@@ -101,7 +101,7 @@ uint16_t idstore_count(void) {
 }
 
 /* Copy the live entries to the front and drop deleted ones. Uses a static
- * buffer (not the stack) because the page is ~2 KB. Assumes flash is unlocked. */
+ * buffer (not the stack) because the page is  around 2 KB. Assumes flash is unlocked. */
 static bool compact(void) {
     static id_slot_t live[IDSTORE_CAP];
     const id_slot_t *s = slots();

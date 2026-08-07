@@ -2,17 +2,16 @@
  * auth.c
  * -----------------------------------------------------------------------------
  * Card access control (see auth.h). Reads the PN532, checks the flash ID list
- * AND a per-card secret stored in MIFARE block 4, and handles the admin fob.
+ * and a per-card secret stored in MIFARE block 4, and handles the admin fob.
  *
  * Two-factor: a card is granted only if its UID is enrolled in the ID list and
- * block 4 holds the secret derived from that card's UID. A cloned UID fails the
- * second factor because the clone does not carry the correct block-4 secret.
+ * block 4 holds the secret derived from that card's UID.
  *
- * Honest limit (per the design journal): MIFARE Classic's Crypto1 is broken, so
- * this raises the bar against casual cloning rather than being truly secure.
+ * Limitation: MIFARE Classic's Crypto1 is publically broken, and one broken card
+ * can compromise all the others
  *
- * The administrative key doubles as an emergency override: presenting it arms
- * the management menu and requests an immediate door opening.
+ * Admin fob doubles as an emergency override: tapping the fob enters
+ * the management menu and requests an immediate door opening, no matter any sensors.
  *
  * auth does not touch the LCD -- it reports events; mgmt renders them.
  * -----------------------------------------------------------------------------
@@ -24,38 +23,38 @@
 #include <string.h>
 #include "main.h"
 
-/* The supplied blue fob is the administrative override key. */
+/* Set admin fob uid*/
 static const uint8_t ADMIN_UID[4] = { 0x4C, 0xE4, 0x2D, 0x07 };
 
-/* MIFARE default key A on factory cards, and the block that holds our secret. */
+/* MIFARE default key A on factory cards, and the block that holds the secret. */
 static const uint8_t DEFAULT_KEY[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 #define SECRET_BLOCK  4
 
-/* Project salt mixed into every per-card secret so the stored value cannot be
- * reproduced from the UID alone. (Prototype-grade; see the note above.) */
+/* Secret
+ */
 static const uint8_t SALT[16] = {
     'D','E','S','N','2','0','0','0', 0x5A,0xA5,0x3C,0xC3,0x69,0x96,0x0F,0xF0
 };
 
 #define ADMIN_IDLE_MS  10000u   /* admin window closes after this much inactivity */
 #define TAP_COOLDOWN_MS  800u   /* ignore repeat reads of a card held on the reader */
-#define POLL_INTERVAL_MS 120u   /* how often the reader is actually interrogated */
+#define POLL_INTERVAL_MS 120u   /* reader poll rate */
 
 static uint32_t     admin_until = 0;         /* admin window expiry (hal_millis) */
 static uint32_t     last_tap = 0;            /* debounce timestamp */
 static uint32_t     last_poll = 0;           /* reader rate limiter */
 static auth_event_t pending = AUTH_EVT_NONE; /* event awaiting mgmt */
 
-static bool granted_flag = false;            /* one-shot: valid card accepted   */
-static bool denied_flag = false;             /* one-shot: card rejected         */
-static bool override_request = false;        /* one-shot: admin key presented   */
+static bool granted_flag = false;            /* valid card accepted   */
+static bool denied_flag = false;             /* card rejected         */
+static bool override_request = false;        /* admin key tap   */
 
 static bool passage_request_active = false;  /* a door request is waiting on NFC */
 static bool auth_enabled = true;             /* reader muted during door motion  */
 static bool reader_ready = false;            /* PN532 initialised successfully   */
 
-/* Derive this card's 16-byte secret from its UID + the salt. Simple, fast, and
- * deterministic: every card gets a distinct value that is not just its UID. */
+/* Derive a card's 16-byte secret from its UID + the secret.
+ * Deterministic: every card gets a distinct value that is not just its UID. */
 static void derive_secret(const card_uid_t *uid, uint8_t out[16]) {
     for (uint8_t i = 0; i < 16; i++) {
         uint8_t u = uid->bytes[i % (uid->length ? uid->length : 1)];
@@ -115,19 +114,16 @@ void auth_task(void) {
     last_tap = now;
 
     if (uid_is_admin(&uid)) {
-        /* The administrative key is honoured at any time -- during a door
-         * movement, an alarm or a fault -- because an override that only works
-         * when the system is already idle would be no override at all. It also
-         * has to stay readable right after it opens the door, so the manager
-         * can enrol a card without waiting for the cycle to finish. */
+        /* Admin fob overrides everything, including door movements and alarms
+         */
         admin_until = now + ADMIN_IDLE_MS;
         override_request = true;
         pending = AUTH_EVT_ADMIN;
         return;
     }
 
-    /* Enrolment is likewise part of the administrative session, so it is not
-     * subject to the mute either. */
+    /* Enrolment in admin mode only
+     */
     if (admin_window_open()) {                   /* enrol: list + stamp secret */
         uint8_t secret[16];
         derive_secret(&uid, secret);
@@ -140,13 +136,13 @@ void auth_task(void) {
         return;
     }
 
-    /* Ordinary cards only count while the system is listening for one and the
+    /* None-admin cards only count while the system is listening for one and the
      * door is actually asking. */
     if (!auth_enabled || !passage_request_active) {
         return;
     }
 
-    /* --- Two-factor verify: UID enrolled AND block-4 secret matches. --- */
+    /* --- Two-factor verify: UID enrolled and block-4 secret matches. --- */
     if (!idstore_contains(uid.bytes, uid.length)) {
         denied_flag = true;
         pending = AUTH_EVT_DENIED;

@@ -1,33 +1,24 @@
 /**
  * passage.c
  * -----------------------------------------------------------------------------
- * Door-passage state machine, built to the design journal's specification.
+ * Door-passage state machine
  *
- * TRIGGERS (from idle only, so a crossing in progress never starts a new cycle):
- *   Outside sensor covered, inside clear  -> ENTRY request, requires a card.
- *   Inside sensor covered, outside clear  -> EXIT request, no card required
- *                                            (leaving is never authorised).
+ * triggers from idle only, so a crossing in progress never starts a new cycle:
+ *   Outside sensor covered, inside clear  -> entry request, requires a card.
+ *   Inside sensor covered, outside clear  -> exit request, no card required
  *
- * SAFE OPEN:
+ *
+ * safe open:
  *   Before the motor moves, the sensor on the side the door swings toward must
- *   be clear, so the door can never open into a person. Entry swings inward and
- *   waits on the inside sensor; exit swings outward and waits on the outside.
+ *   be clear
  *
- * OPEN WINDOW:
- *   The door stays open for a fixed window and then closes once BOTH sensors
- *   read clear. If someone is still standing in the doorway it simply keeps
- *   waiting -- the door never closes on a covered sensor.
+ *   The door stays open for a fixed window and then closes once both sensors
+ *   read clear.
  *
- * TAILGATE INVARIANT:
- *   During any open window exactly one authorised inward movement is expected,
+ * Tailgate invariant: During any open window exactly one authorised inward movement is expected,
  *   so an unexpected break of the inside sensor means someone entered without
- *   authorisation. On entry the authorised person accounts for one inside
- *   break; on exit none are expected. Any break beyond the allowance raises the
- *   alarm. This one rule covers both tailgating behind an entry and an
- *   opportunist slipping in while somebody legitimately exits.
+ *   authorisation, which raises the alarm. 5 consecutive rejections of a card does too.
  *
- * A separate counter alarms after repeated card rejections, giving two
- * independent alarm paths.
  * -----------------------------------------------------------------------------
  */
 
@@ -47,7 +38,7 @@
 
 #define NFC_SCAN_TIMEOUT_MS      10000u  /* how long we wait for a card         */
 #define WAIT_CLEAR_TIMEOUT_MS    15000u  /* destination side blocked for too long */
-#define OPEN_WINDOW_MS            5000u  /* journal: five-second passage window  */
+#define OPEN_WINDOW_MS            5000u  /* five second passage window  */
 #define MAX_FAILED_ATTEMPTS           5u
 
 static uint32_t s_state_started_ms = 0;
@@ -59,7 +50,7 @@ static uint8_t  s_inside_allowance = 0;   /* how many are legitimate            
 static bool     s_reset_closing = false;
 
 /* Publish whether a configured unlock window is active right now. The clock
- * must have been set by the manager; until then schedules stay inert. */
+ * must have been set by the manager. Until then schedules stay inert. */
 static void update_scheduled_unlock(void)
 {
     sys_set_scheduled_unlock(
@@ -95,7 +86,7 @@ static void enter_idle(void)
     lcd_feedback_show_idle();
 }
 
-/* Entry only: ask for a card before anything moves. */
+/* Entry only: ask for a card before door moves */
 static void enter_authenticating(void)
 {
     sys_set_direction(DIR_ENTRY);
@@ -110,7 +101,7 @@ static void enter_authenticating(void)
     lcd_feedback_show_waiting(DIR_ENTRY);
 }
 
-/* Hold until the destination side is clear, then move (the safe-open guard). */
+/* Hold until the destination side is clear, then move */
 static void enter_wait_clear(sys_direction_t direction)
 {
     sys_set_direction(direction);
@@ -137,8 +128,8 @@ static void enter_system_error(void)
     nfc_set_locked(true);
 
     /* Ordinary cards stay ignored, but the reader keeps listening so the
-     * administrative key can still override. The motor is idle in this state,
-     * so polling costs nothing that matters. */
+     * admin key can still override. The motor is idle in this state,
+     * so polling doesn't make the system unresponsive */
     auth_set_enabled(true);
 
     sys_set_state(SYS_ERROR);
@@ -181,8 +172,7 @@ static void enter_alarm(void)
     nfc_cancel_request();
     nfc_set_locked(true);
 
-    /* Same reasoning as the fault state: the override key must be audible
-     * while the system is locked down. */
+    /* Admin key must be audible while the system is locked down. */
     auth_set_enabled(true);
 
     sys_set_direction(DIR_NONE);
@@ -221,11 +211,7 @@ void passage_init(void)
 
 /* ---- Main task ------------------------------------------------------------ */
 
-/* Clear an alarm or fault on the authority of the administrative key. Unlike
- * the keypad reset this is not gated on the doorway being clear: the person
- * holding the key is standing at the door. The alarm stops at once and the door
- * is then closed through the ordinary closing state, which still reopens if
- * something is in the way. */
+/* Clear an alarm or fault with admin key */
 static void admin_override_reset(void)
 {
     sys_reset_failed_attempts();
@@ -272,8 +258,7 @@ void passage_task(void)
     /* An override is only meaningful when the door is at rest. Presenting the
      * administrative key while a cycle is already running would otherwise latch
      * a request that fires the moment the door finishes, reopening it for no
-     * reason. Discard it instead; the door is already doing what was asked.
-     * The request is kept in the alarm and fault states, where clearing the
+     * reason. Discard it instead. The request is kept in the alarm and fault states, where clearing the
      * lockout and then opening is exactly the intended override behaviour. */
     switch (state) {
     case SYS_WAIT_CLEAR:
@@ -302,8 +287,8 @@ void passage_task(void)
         bool outside_broke = ldr_became_covered(LDR_1);
         bool inside_broke  = ldr_became_covered(LDR_2);
 
-        /* The administrative key is an override: it opens the door on its own,
-         * without a sensor request, while also arming the admin menu. */
+        /* The admin key is an override: it opens the door on its own,
+         * without a sensor request, while also showing the admin menu. */
         if (auth_take_override_request()) {
             enter_wait_clear(DIR_ENTRY);
             break;
@@ -364,12 +349,12 @@ void passage_task(void)
 
     /* --------------------------------------------------------- WAIT_CLEAR */
     case SYS_WAIT_CLEAR:
-        /* Do not move until the side we swing toward is empty. */
+        /* Do not move until the side we swing toward is clear. */
         if (!ldr_is_covered(destination_sensor(sys_get_direction()))) {
             enter_opening();
         }
         else if ((now - s_state_started_ms) >= WAIT_CLEAR_TIMEOUT_MS) {
-            enter_idle();                      /* gave up; door never moved */
+            enter_idle();                      /* gave up, door never moved */
         }
         break;
 
@@ -384,11 +369,11 @@ void passage_task(void)
             break;
         }
 
-        motor_resume();                 /* no-op unless we were holding */
+        motor_resume();                 /* no op unless door was holding */
 
         if (motor_get_state() == DOOR_OPEN) {
-            /* During a scheduled window the door simply stays open for the
-             * whole event rather than running the five-second passage cycle. */
+            /* During a scheduled window, door stays open for the whole event
+             */
             if (sys_get_scheduled_unlock()) {
                 sys_set_state(SYS_SCHEDULED_UNLOCK);
                 ldr_clear_events();
@@ -428,7 +413,7 @@ void passage_task(void)
         (void)ldr_became_covered(LDR_1);       /* consume; not part of the rule */
 
         /* Close once the window has elapsed AND the doorway is empty. If it is
-         * still occupied we keep waiting -- never close on a person. */
+         * still occupied, keep waiting and never close on a person. */
         if ((now - s_open_since_ms) >= OPEN_WINDOW_MS && ldr_all_clear()) {
             if (motor_close()) {
                 sys_set_state(SYS_CLOSING);
@@ -442,7 +427,7 @@ void passage_task(void)
 
     /* ------------------------------------------------------------ CLOSING */
     case SYS_CLOSING:
-        /* Interruptible: an obstruction sends the door back open. */
+        /* Interruptible: an obstruction re-opens the door */
         if (ldr_any_covered()) {
             if (motor_reopen(sys_get_direction())) {
                 sys_set_state(SYS_OPENING);
@@ -459,10 +444,9 @@ void passage_task(void)
 
     /* -------------------------------------------------- SCHEDULED_UNLOCK */
     case SYS_SCHEDULED_UNLOCK:
-        /* Held open for the whole event. No card is required and the tailgate
-         * rule is suspended, because during a scheduled open period everyone is
-         * expected to pass freely (see the design journal). Close once the
-         * window ends and the doorway is empty. */
+        /* Held open for the whole event. No card is required, alarms suspended.
+         * Close once the window ends and the doorway is empty. */
+
         if (!sys_get_scheduled_unlock() && ldr_all_clear()) {
             if (motor_close()) {
                 sys_set_state(SYS_CLOSING);
@@ -520,7 +504,7 @@ void passage_task(void)
     }
 }
 
-/* ---- Manual reset ('#' while an alarm or error is displayed) --------------- */
+/* ---- Manual reset--------------- */
 
 bool passage_manual_reset(void)
 {
@@ -537,7 +521,7 @@ bool passage_manual_reset(void)
 
     if (state == SYS_ALARM) {
         if (motor_get_state() != DOOR_CLOSED) {
-            /* Bring the door home first; the alarm clears once it is shut. */
+            /* Close the door, alarm clears once it is shut. */
             if (!motor_is_moving() && !motor_force_close()) {
                 return false;
             }

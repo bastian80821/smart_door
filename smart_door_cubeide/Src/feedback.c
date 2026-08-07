@@ -4,19 +4,16 @@
  * LED-bar and buzzer patterns for the access-control system.
  *
  * THEMES
- *   The manager can select a feedback profile (Default, Star Wars, James Bond)
+ *   Manager can select a feedback profile (Default, Star Wars, James Bond)
  *   from the admin menu. The profile changes how access granted, access denied
  *   and the two travel directions are signalled.
  *
- *   The intrusion alarm and the system-error indication are deliberately NOT
- *   themed. Those states exist to be recognised instantly by anyone, so they
- *   look and sound the same in every profile -- a decision carried over from
- *   the design journal.
+ *   The intrusion alarm and the system-error indication are deliberately not
+ *   themed.
  *
- *   The buzzer is monophonic, so a "melody" here is a short contour of single
+ *   Buzzer is monophonic, so a melody is a short contour of single
  *   tones rather than real music.
  *
- * IMPLEMENTATION
  *   Every themed pattern is a list of frames. A frame is an LED-bar mask, a
  *   buzzer frequency and a duration, so adding or retuning a theme is a matter
  *   of editing a table rather than writing new animation code.
@@ -41,8 +38,7 @@
 
 #define TONE_SILENT                  0u
 
-/* One step of a themed pattern: what the bar shows, what the buzzer plays and
- * for how long. */
+/* One step of a themed pattern: what the bar shows, what the buzzer plays and for how long */
 typedef struct {
     uint16_t led_mask;
     uint16_t frequency_hz;
@@ -50,8 +46,7 @@ typedef struct {
 } frame_t;
 
 /* ---- Default profile ------------------------------------------------------
- * Plain and legible: the bar fills in the direction of travel with a single
- * confirmation beep, and a rejection is three flashes with three low tones. */
+  */
 
 static const frame_t DEFAULT_ENTRY[] = {
     { 0x0003u, 2200u,  60u }, { 0x000Fu, 2200u,  60u },
@@ -74,9 +69,7 @@ static const frame_t DEFAULT_DENIED[] = {
 };
 
 /* ---- Star Wars profile ----------------------------------------------------
- * Entry bursts outward from the centre with a rising astromech chirp; exit
- * collapses back to the centre with the same contour reversed. A rejection is
- * the heavy paired cadence of the Imperial March's opening figure. */
+ */
 
 static const frame_t SW_ENTRY[] = {
     { 0x0180u, 1200u,  70u }, { 0x03C0u, 1600u,  70u },
@@ -101,9 +94,7 @@ static const frame_t SW_DENIED[] = {
 };
 
 /* ---- James Bond profile ---------------------------------------------------
- * Entry snaps a single segment across the bar and then fills, under a rising
- * glide; exit wipes the bar away under a falling one. A rejection is a tense
- * two-segment flicker with an alternating two-note figure. */
+ */
 
 static const frame_t JB_ENTRY[] = {
     { 0x0001u,  800u,  45u }, { 0x0004u,  950u,  45u },
@@ -241,12 +232,12 @@ void feedback_set_mode(feedback_mode_t mode)
         break;
 
     case FEEDBACK_UNAUTHORIZED_ALARM:
-        /* Never themed: an intrusion must look and sound the same to everyone. */
+        /* Never themed */
         set_outputs(LED_ALL_MASK, ALARM_HIGH_HZ);
         break;
 
     case FEEDBACK_SYSTEM_ERROR:
-        /* Never themed, and silent so a fault does not sound like a break-in. */
+        /* Never themed. */
         set_outputs(LED_BOTTOM_MASK, TONE_SILENT);
         break;
     }

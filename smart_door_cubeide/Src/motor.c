@@ -16,12 +16,12 @@ static sys_direction_t s_open_direction = DIR_NONE;
 
 static uint32_t s_movement_started_ms = 0;
 static bool s_error = false;
-static bool s_paused = false;      /* movement deliberately held part-way */
+static bool s_paused = false;      /* movement deliberately held part-way (door blocked) */
 
 void motor_init(void)
 {
     /*
-     * The physical door is assumed to be closed at power-up.
+     * Door assumed closed at power up
      */
     hal_motor_set(MOTOR_STOP);
 
@@ -142,7 +142,7 @@ bool motor_reopen(sys_direction_t direction)
 bool motor_force_close(void)
 {
     /*
-     * Used only after a manual reset and physical inspection.
+     * Ignores sensors and foces close
      */
     s_error = false;
     s_paused = false;
