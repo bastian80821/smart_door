@@ -1,17 +1,16 @@
 /**
  * mgmt.c
  * -----------------------------------------------------------------------------
- * A shallow, admin-gated menu driven by the 4x4 keypad and shown on the 2-row
- * LCD. Layout follows the design journal: the top row shows information, the
- * bottom row shows the prompt / current input.
+ * Admin menu, shown on LCD, gated by fob, controlled through keypad
+
  *
- * Keypad (per the journal, Figure 4): A = up, B = down, C = back, D = ok,
- *   * = delete a digit, # = home (jump back to idle from anywhere).
+ * Keypad map: A = up, B = down, C = back, D = ok,
+ *   * = delete a digit, # = home
  *
  * mgmt owns the LCD. It renders the menu, the access-control events auth
- * reports, and the system messages the passage controller pushes, so there is a
- * single display owner. The idle screen tracks the live admin state and redraws
- * itself the moment the admin window opens or expires, with no keypress needed.
+ * reports, and the system messages the passage controller pushes.
+ * The idle screen tracks the live admin state and redraws
+ * itself the moment the admin window opens or expires.
  * -----------------------------------------------------------------------------
  */
 #include "mgmt.h"
@@ -23,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ---- Admin gate seam ------------------------------------------------------
+/* ---- Admin gate ------------------------------------------------------
  * The menu is only reachable while the admin fob window is open. */
 static bool is_admin(void) {
     return auth_is_admin();
@@ -61,7 +60,7 @@ static mstate_t    notice_next = ST_IDLE;
 static uint32_t    notice_until = 0;
 
 /* Last admin state we drew on the idle screen, so we can refresh idle the
- * instant the admin window opens or expires -- even with no keypress. */
+ * instant the admin window opens or expires */
 static bool        idle_admin_shown = false;
 
 /* ---- Messages pushed in by the passage controller ------------------------ */
@@ -71,9 +70,8 @@ static bool system_message_dirty = false;
  * progress does not, so an admin using the menu is not interrupted by it. */
 static bool system_message_critical = false;
 static bool reset_requested = false;
-/* An override by the administrative key is stronger than the '#' reset: it is
- * not conditional on the doorway sensors, because an authorised person is
- * physically present and can see the door. */
+/* An override by the administrative key is stronger than the '#' reset and unconditional
+ */
 static bool admin_reset_requested = false;
 
 static bool custom_idle_enabled = false;
@@ -154,8 +152,8 @@ static void show_config(void) {
                  (unsigned)c->event_duration_min);
     }
 
-    /* Second row carries the live clock and the selected theme, so one screen
-     * answers "what is configured" and "what time does the door think it is". */
+    /* Second row carries the live clock and the selected theme, first instructions
+    */
     if (clock_is_set()) {
         snprintf(bot, sizeof bot, "%02u:%02u %s",
                  (unsigned)(clock_now_min() / 60),
@@ -200,7 +198,7 @@ static void notice(const char *msg, mstate_t next) {
 static void go(mstate_t s) {
     state = s;
 
-    /* A door message parked while the menu was open becomes visible again the
+    /* A door message hidden while admin menu was open becomes visible again the
      * moment we return to idle. */
     if (s == ST_IDLE && system_message_active) {
         system_message_dirty = true;
@@ -293,18 +291,13 @@ bool mgmt_take_admin_reset_request(void)
 }
 
 void mgmt_task(void) {
-    /* Auth events are read first. The admin key must be acknowledged even when
-     * a door message is on screen, otherwise presenting it while the door is
-     * opening would be silently swallowed. */
+    /* Auth events are read first to detect admin key at any time
+     */
     auth_event_t evt = auth_poll_event();
 
     if (evt == AUTH_EVT_ADMIN) {
-        /* The administrative key is a full override. As well as opening the
-         * door it clears an alarm or fault outright -- an authorised manager
-         * arriving at the door is exactly who should be able to end one. The
-         * reset is requested from the passage controller rather than merely
-         * hiding the message, so the buzzer and lights actually stop and the
-         * system unlocks instead of alarming behind a friendlier screen. */
+        /* Admin key is a full override.
+         */
         admin_reset_requested = true;
 
         system_message_active = false;
@@ -374,7 +367,7 @@ void mgmt_task(void) {
     }
 
     /* Idle reflects the live admin state: redraw the instant the admin window
-     * opens or expires, without waiting for a keypress. */
+     * opens or expires */
     if (state == ST_IDLE && auth_is_admin() != idle_admin_shown) {
         idle_admin_shown = auth_is_admin();
 
@@ -402,7 +395,7 @@ void mgmt_task(void) {
     if (k == '\0') return;              /* nothing new this tick */
     auth_touch();                       /* keypress counts as admin activity */
 
-    /* Home key: bail out to idle from anywhere except idle itself. */
+    /* Home key: return to idle */
     if (k == '#' && state != ST_IDLE) { go(ST_IDLE); return; }
 
     switch (state) {
@@ -427,10 +420,8 @@ void mgmt_task(void) {
                 case M_THEME: theme_pick = config_get()->active_theme; go(ST_THEME); break;
 
                 case M_CLEAR:
-                    /* Wipes every enrolled card. Acts immediately rather than
-                     * asking for confirmation: on a two-row display an extra
-                     * prompt costs more than it protects, and re-enrolling is
-                     * a single tap. */
+                    /* Wipes every enrolled card.
+                     */
                     if (idstore_clear_all()) {
                         notice("Cards cleared", ST_MENU);
                     } else {
@@ -443,7 +434,7 @@ void mgmt_task(void) {
         }
         break;
 
-    /* Step 1 of "set event": the start time. */
+    /* Step 1 of set event: start time. */
     case ST_EVENT_TIME:
         if      (k >= '0' && k <= '9' && entry_len < 4) { entry[entry_len++] = k; render(); }
         else if (k == '*' && entry_len > 0)             { entry_len--; render(); }
@@ -460,7 +451,7 @@ void mgmt_task(void) {
         }
         break;
 
-    /* Step 2 of "set event": the duration. Commits both together. */
+    /* Step 2 of set event: the duration. Commits both together. */
     case ST_EVENT_DUR:
         if      (k >= '0' && k <= '9' && entry_len < 3) { entry[entry_len++] = k; render(); }
         else if (k == '*' && entry_len > 0)             { entry_len--; render(); }

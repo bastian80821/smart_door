@@ -3,12 +3,11 @@
  * -----------------------------------------------------------------------------
  * Debounced two-LDR passage detection.
  *
- * Existing hardware names are reused:
+ * Physical mapping:
  *
  *   LDR_1 = LDR_OUTER
  *   LDR_2 = LDR_INNER
  *
- * Confirm this physical mapping during bench testing.
  * -----------------------------------------------------------------------------
  */
 #ifndef LDR_H
@@ -35,9 +34,7 @@ typedef struct {
 } ldr_config_t;
 
 /*
- * Starting values only.
- *
- * Replace these after recording real covered and uncovered ADC readings.
+ * Calibrated threshhold values (UNSW law library)
  */
 #define LDR_DEFAULT_COVERED_THRESHOLD  700u
 #define LDR_DEFAULT_CLEAR_THRESHOLD    1100u

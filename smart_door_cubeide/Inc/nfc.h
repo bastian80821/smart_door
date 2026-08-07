@@ -1,7 +1,7 @@
 /**
  * nfc.h
  * -----------------------------------------------------------------------------
- * Thin passage-request layer around the team's existing auth module.
+ * Passage request layer around the auth module.
  *
  * NFC communication and authentication are not duplicated here. auth.c remains
  * responsible for the PN532, UID list, MIFARE verification and admin handling.

@@ -3,7 +3,7 @@
  * -----------------------------------------------------------------------------
  * Management / admin interface: the LCD + keypad menu the building manager uses
  * to configure the scheduled unlock (start time + duration) and the feedback
- * theme. Everything it changes is written through config.h; the door and alarm
+ * theme. Everything it changes is written through config.h, the door and alarm
  * modules read those settings from there.
  *
  * Non-blocking: call mgmt_task() once per iteration of the main loop. It never
@@ -16,7 +16,7 @@
 #include <stdbool.h>
 
 void mgmt_init(void);   /* draw the idle screen once at startup */
-void mgmt_task(void);   /* advance the interface; call every loop */
+void mgmt_task(void);   /* advance the interface. Call every loop */
 
 /**
  * Change the normal non-admin idle message.
@@ -39,7 +39,7 @@ bool mgmt_take_admin_reset_request(void);
 
 /**
  * Manual reset request.
- * While a system message is active, pressing '#' creates a one-shot reset
+ * While a system message is active, pressing # creates a one-shot reset
  * request for the passage controller.
  */
 bool mgmt_take_reset_request(void);

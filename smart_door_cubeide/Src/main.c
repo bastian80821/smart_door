@@ -112,7 +112,7 @@ int main(void)
 
   HAL_Delay(150); // Gives time for the PN532 to finish powering up.
 
-  //CLEARS ALL IDS TEMPORARILY FOR DEMONSTRATION PURPOSES
+  //Clear Ids temporarily for demo purposes
   auth_init();
   mgmt_init();
   clock_init();

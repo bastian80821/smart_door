@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file    adc.h
-  * @brief   This file contains all the function prototypes for
+  * @brief   Contains all the function prototypes for
   *          the adc.c file
   ******************************************************************************
   * @attention

@@ -1,11 +1,7 @@
 /**
  * hal_wrapper.c
  * -----------------------------------------------------------------------------
- * Hardware layer behind hal_wrapper.h. This is the only file that touches the
- * HAL / registers directly.
- *
- * Status: the LCD is implemented (HD44780, 4-bit mode). The remaining peripherals
- * are still safe stubs and get filled in as each is brought up on the bench.
+ * Hardware layer behind hal_wrapper.h. Only file that touches the HAL / registers directly.
  * -----------------------------------------------------------------------------
  */
 #include "hal_wrapper.h"
@@ -17,8 +13,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ---- Pin map (coaST board) -----------------------------------------------
- * Kept local so feature code never sees a pin number. Mirrors the README table.
+/* ---- Pin map -----------------------------------------------
+ * Kept local so feature code never sees a pin number.
  * Data lines D4..D7 are PC8..PC11 (contiguous, same port).                    */
 #define LCD_RS_PORT   GPIOA
 #define LCD_RS_PIN    GPIO_PIN_15
@@ -67,7 +63,7 @@ static void lcd_send(uint8_t value, uint8_t rs) {
     HAL_GPIO_WritePin(LCD_RS_PORT, LCD_RS_PIN, rs ? GPIO_PIN_SET : GPIO_PIN_RESET);
     lcd_put_nibble(value >> 4);
     lcd_put_nibble(value & 0x0F);
-    delay_us(50);                /* most instructions settle in ~37 us */
+    delay_us(50);                /* most instructions settle in around 37 us */
 }
 
 static void lcd_command(uint8_t cmd) { lcd_send(cmd, 0); }
@@ -116,7 +112,7 @@ void hal_lcd_define_char(uint8_t slot, const uint8_t rows[8]) {
 }
 
 
-/* ==== Card reader (PN532 over I2C) ========================================
+/* ==== Card reader (PN532 I2C) ========================================
  * Protocol: command frame -> ACK frame -> response frame. Each I2C read is
  * prefixed by a status byte (bit0 = 1 means "ready"). Addr 0x24 on hi2c1.   */
 
@@ -175,7 +171,7 @@ static bool pn532_read_ack(void) {
 bool hal_reader_init(void)
 {
     /*
-     * Allow the PN532 to complete its power-up.
+     * PN532 power-up delay
      */
     HAL_Delay(100);
 
@@ -415,9 +411,7 @@ bool hal_ldr_last_read_ok(ldr_id_t sensor)
 /* ---- Stepper / door ------------------------------------------------------ */
 
 /*
- * This is a configurable starting value.
  *
- * Confirm the real motor's steps per revolution during bench testing.
  */
 #define STEPPER_STEPS_PER_REVOLUTION 4096L
 
@@ -495,24 +489,21 @@ void hal_motor_set(motor_cmd_t cmd)
     switch (cmd) {
     case MOTOR_OPEN_ENTRY:
         /*
-         * 90 degrees to the right.
-         *
-         * Swap this sign with MOTOR_OPEN_EXIT if the physical installation is
-         * reversed.
+         * 90 degrees to the right for entry
          */
         s_motor_target = STEPPER_QUARTER_TURN_STEPS;
         break;
 
     case MOTOR_OPEN_EXIT:
         /*
-         * 90 degrees to the left.
+         *  90 degrees to the right for exit
          */
         s_motor_target = -STEPPER_QUARTER_TURN_STEPS;
         break;
 
     case MOTOR_CLOSE:
         /*
-         * Position zero is the original closed position.
+         * Position zero is original closed position
          */
         s_motor_target = 0;
         break;
@@ -597,12 +588,12 @@ bool hal_motor_done(void)
 #define LED_SER_PIN  GPIO_PIN_15
 
 /*
- * Set this to 1 if the physical LED order appears reversed.
+ * Reverses LED bar
  */
 #define LED_BAR_REVERSE_ORDER 0
 
 /*
- * Set this to 1 if zero turns an LED on.
+ * Switch between active low/high
  */
 #define LED_BAR_ACTIVE_LOW 0
 
@@ -744,8 +735,8 @@ void hal_buzzer_tone(uint16_t frequency_hz){
 
 /* ---- Keypad ---- */
 /* Non-blocking single-key scan with debounce. Returns a key exactly once per
- * physical press (on release), or '\0' if nothing new. Rows idle HIGH; we drive
- * one LOW at a time and look for a column pulled LOW through the pressed key. */
+ * physical press (on release), or '\0' if nothing new. Rows idle high, we drive
+ * one low at a time and look for a column pulled low through the pressed key. */
 char hal_keypad_scan(void) {
     GPIO_TypeDef *row_port[4] = { GPIOB, GPIOB, GPIOB, GPIOB };
     uint16_t      row_pin[4]  = { GPIO_PIN_11, GPIO_PIN_12, GPIO_PIN_13, GPIO_PIN_14 };

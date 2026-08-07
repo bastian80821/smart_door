@@ -16,7 +16,7 @@ void passage_task(void);
 /**
  * Clear SYS_ALARM or SYS_ERROR after manual inspection.
  *
- * The same function is triggered by pressing '#' while the alarm/error message
+ * The same function is triggered by pressing # while the alarm/error message
  * is displayed.
  */
 bool passage_manual_reset(void);
